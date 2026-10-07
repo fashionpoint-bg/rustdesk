@@ -1031,6 +1031,11 @@ pub fn check_software_update() {
 // Because the url is always `https://api.rustdesk.com/version/latest`.
 #[tokio::main(flavor = "current_thread")]
 pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
+    // FashionPoint build: never ask RustDesk for a newer version. An "update" would install the
+    // official client, which has neither the built-in config (see load_custom_client) nor our signature.
+    if option_env!("FP_CLIENT_CONFIG").is_some_and(|s| !s.is_empty()) {
+        return Ok(());
+    }
     let (request, url) =
         hbb_common::version_check_request(hbb_common::VER_TYPE_RUSTDESK_CLIENT.to_string());
     let proxy_conf = Config::get_socks();
@@ -2358,6 +2363,16 @@ pub fn rustdesk_interval(i: Interval) -> ThrottledInterval {
 }
 
 pub fn load_custom_client() {
+    // FashionPoint build: the client config is compiled in from FP_CLIENT_CONFIG, the JSON a
+    // custom.txt carries (app-name, hard options, default-settings, override-settings), unsigned.
+    // Every binary of this fork gets its server, key and name without a side file.
+    if let Some(json) = option_env!("FP_CLIENT_CONFIG").filter(|s| !s.is_empty()) {
+        match serde_json::from_str::<HashMap<String, Value>>(json) {
+            Ok(data) => apply_custom_client(data),
+            Err(e) => log::error!("Failed to parse the built-in client config: {}", e),
+        }
+        return;
+    }
     #[cfg(debug_assertions)]
     if let Ok(data) = std::fs::read_to_string("./custom.txt") {
         read_custom_client(data.trim());
@@ -2469,13 +2484,16 @@ pub fn read_custom_client(config: &str) {
         log::error!("Failed to dec custom client config");
         return;
     };
-    let Ok(mut data) =
+    let Ok(data) =
         serde_json::from_slice::<std::collections::HashMap<String, serde_json::Value>>(&data)
     else {
         log::error!("Failed to parse custom client config");
         return;
     };
+    apply_custom_client(data);
+}
 
+fn apply_custom_client(mut data: HashMap<String, Value>) {
     if let Some(app_name) = data.remove("app-name") {
         if let Some(app_name) = app_name.as_str() {
             *config::APP_NAME.write().unwrap() = app_name.to_owned();
