@@ -1,0 +1,66 @@
+name: FashionPoint build
+
+# Builds the FashionPoint client with the upstream pipeline (flutter-build.yml), with the client config
+# from the FP_CLIENT_CONFIG secret compiled in (load_custom_client in src/common.rs).
+# - Tag fp-v<upstream version>-<n> (e.g. fp-v1.5.0-1): build, sign and publish the release.
+#   Windows is signed with Azure Artifact Signing; macOS and Android when their secrets are set.
+# - Manual run: build only (nothing is uploaded) unless "publish" is ticked.
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Upload the build to the fp-test release (unsigned)"
+        type: boolean
+        default: false
+  push:
+    tags:
+      - "fp-v*"
+
+permissions:
+  contents: read
+
+jobs:
+  check-config:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate FP_CLIENT_CONFIG
+        env:
+          FP_CLIENT_CONFIG: ${{ secrets.FP_CLIENT_CONFIG }}
+        shell: python
+        run: |
+          import json, os, sys
+
+          raw = os.environ.get("FP_CLIENT_CONFIG", "")
+          if not raw:
+              sys.exit("The FP_CLIENT_CONFIG secret is empty: the build would be a stock RustDesk.")
+          try:
+              config = json.loads(raw)
+          except ValueError as e:
+              sys.exit(f"FP_CLIENT_CONFIG is not valid JSON: {e}")
+          override = config.get("override-settings") or {}
+          errors = []
+          name = config.get("app-name") or ""
+          if not name or name == "RustDesk" or not name.replace("-", "").isalnum():
+              errors.append("app-name must be set, differ from RustDesk and have no spaces (it becomes a URI scheme)")
+          if config.get("disable-account") != "Y":
+              errors.append("disable-account must be Y")
+          for key in ("custom-rendezvous-server", "relay-server", "key"):
+              if not override.get(key):
+                  errors.append(f"override-settings.{key} is missing")
+          if override.get("allow-auto-update") != "N":
+              errors.append("override-settings.allow-auto-update must be N")
+          if errors:
+              sys.exit("FP_CLIENT_CONFIG: " + "; ".join(errors))
+          print(f"FP_CLIENT_CONFIG is valid: app-name {name}")
+
+  build:
+    needs: check-config
+    permissions:
+      contents: write # Publish Release
+    uses: ./.github/workflows/flutter-build.yml
+    secrets: inherit
+    with:
+      upload-artifact: ${{ startsWith(github.ref, 'refs/tags/') || inputs.publish == true }}
+      upload-tag: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'fp-test' }}
+      fashionpoint: true
