@@ -2969,6 +2969,11 @@ pub mod server_side {
             if !custom_client_config.is_empty() {
                 let custom_client_config: String = custom_client_config.into();
                 crate::read_custom_client(&custom_client_config);
+            } else {
+                // FashionPoint: MainService passes "" and only flutter's initialize() loads the built-in
+                // client config, so a service started without the UI (BootReceiver, or a sticky restart
+                // after the process died) would otherwise run on the default servers.
+                crate::load_custom_client();
             }
         }
         std::thread::spawn(move || start_server(true));
