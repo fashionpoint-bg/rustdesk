@@ -823,6 +823,9 @@ jobs:
           p12-file-base64: ${{ secrets.MACOS_P12_BASE64 }}
           p12-password: ${{ secrets.MACOS_P12_PASSWORD }}
           keychain: rustdesk
+          # FashionPoint: without this the action creates the keychain with a random password, and the
+          # "Codesign app and create signed dmg" step unlocks it with MACOS_P12_PASSWORD.
+          keychain-password: ${{ secrets.MACOS_P12_PASSWORD }}
 
       - name: Check sign and import sign key
         if: env.MACOS_P12_BASE64 != null

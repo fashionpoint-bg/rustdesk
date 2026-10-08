@@ -7,7 +7,8 @@ name: FashionPoint build
 # - Manual run: build only (nothing is uploaded) unless "publish" is ticked.
 # Signing inputs. Windows: vars AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT,
 # AZURE_CERT_PROFILE + secret AZURE_CLIENT_SECRET. macOS: secrets MACOS_P12_BASE64, MACOS_P12_PASSWORD,
-# MACOS_CODESIGN_IDENTITY (value includes its own quotes), APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID.
+# MACOS_CODESIGN_IDENTITY (the certificate's SHA-1 fingerprint, so it needs no shell quoting), APPLE_ID,
+# APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID.
 # Android: secrets ANDROID_SIGNING_KEY, ANDROID_ALIAS, ANDROID_KEY_STORE_PASSWORD, ANDROID_KEY_PASSWORD.
 
 on:
