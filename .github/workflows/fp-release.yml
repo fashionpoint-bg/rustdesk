@@ -5,6 +5,10 @@ name: FashionPoint build
 # - Tag fp-v<upstream version>-<n> (e.g. fp-v1.5.0-1): build, sign and publish the release.
 #   Windows is signed with Azure Artifact Signing; macOS and Android when their secrets are set.
 # - Manual run: build only (nothing is uploaded) unless "publish" is ticked.
+# Signing inputs. Windows: vars AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT,
+# AZURE_CERT_PROFILE + secret AZURE_CLIENT_SECRET. macOS: secrets MACOS_P12_BASE64, MACOS_P12_PASSWORD,
+# MACOS_CODESIGN_IDENTITY (value includes its own quotes), APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID.
+# Android: secrets ANDROID_SIGNING_KEY, ANDROID_ALIAS, ANDROID_KEY_STORE_PASSWORD, ANDROID_KEY_PASSWORD.
 
 on:
   workflow_dispatch:
