@@ -8,6 +8,7 @@ mod mcp;
 mod pro;
 mod session;
 mod terminal;
+mod tunnel;
 
 use std::path::Path;
 
@@ -28,6 +29,8 @@ COMMANDS:
     terminal <id> -- <cmd>              Run a shell command on a peer and print its output
     ls <id> <remote-dir>                List a directory on a peer
     download <id> <remote-file> <local> Copy a file from a peer to this machine
+    tunnel <id> <local-port> <remote-host> <remote-port>
+                                        Forward localhost:<local-port> to <remote-host>:<remote-port> as seen from the peer
     mcp                                 Run the MCP server over stdio (for AI agents)
     help                                Show this help
 
@@ -88,6 +91,7 @@ async fn run(command: &str) -> ResultType<()> {
         "terminal" => run_terminal().await,
         "ls" => run_ls().await,
         "download" => run_download().await,
+        "tunnel" => run_tunnel().await,
         "mcp" => mcp::serve().await,
         "help" | "--help" | "-h" => {
             print!("{}", USAGE);
@@ -198,6 +202,37 @@ async fn run_ls() -> ResultType<()> {
         );
     }
     Ok(())
+}
+
+async fn run_tunnel() -> ResultType<()> {
+    let a = peer_args(
+        "fpremote-agent tunnel <id> <local-port> <remote-host> <remote-port> [--password <pw>]",
+    )?;
+    let (local_port, remote_host, remote_port) = match a.rest.as_slice() {
+        [l, h, r, ..] => (
+            l.parse::<i32>().map_err(|_| anyhow!("bad <local-port>: {l}"))?,
+            h.clone(),
+            r.parse::<i32>().map_err(|_| anyhow!("bad <remote-port>: {r}"))?,
+        ),
+        _ => bail!("need <local-port> <remote-host> <remote-port>"),
+    };
+    if !(1..=65535).contains(&local_port) || !(1..=65535).contains(&remote_port) {
+        bail!("ports must be 1-65535");
+    }
+    let (cfg, session) = connect().await?;
+    let password = resolve_password(&session, &a.id, a.password).await;
+    let result = tunnel::run(
+        &cfg.key,
+        &session.token,
+        &a.id,
+        &password,
+        local_port,
+        &remote_host,
+        remote_port,
+    )
+    .await;
+    session.logout().await.ok();
+    result
 }
 
 async fn run_download() -> ResultType<()> {

@@ -30,7 +30,7 @@ pub struct AgentInterface {
 }
 
 impl AgentInterface {
-    fn new(lc: Arc<RwLock<LoginConfigHandler>>) -> Self {
+    pub(crate) fn new(lc: Arc<RwLock<LoginConfigHandler>>) -> Self {
         Self {
             lc,
             outbox: Arc::new(Mutex::new(Vec::new())),
