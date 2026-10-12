@@ -4,6 +4,8 @@
 
 mod config;
 mod pro;
+mod session;
+mod terminal;
 
 use hbb_common::ResultType;
 
@@ -17,9 +19,13 @@ USAGE:
     fpremote-agent <COMMAND>
 
 COMMANDS:
-    login      Log in to the Pro server and report the session
-    devices    List the clinic computers this account can reach
-    help       Show this help
+    login                       Log in to the Pro server and report the session
+    devices                     List the clinic computers this account can reach
+    terminal <id> -- <cmd>      Run a shell command on a peer and print its output
+    help                        Show this help
+
+OPTIONS for terminal:
+    --password <pw>             Connect password for the peer (else taken from the shared address book)
 ";
 
 /// Entry point called by the thin binary. Runs one command to completion.
@@ -73,6 +79,7 @@ async fn run(command: &str) -> ResultType<()> {
             session.logout().await?;
             Ok(())
         }
+        "terminal" => run_terminal().await,
         "help" | "--help" | "-h" => {
             print!("{}", USAGE);
             Ok(())
@@ -89,4 +96,58 @@ async fn connect() -> ResultType<(AgentConfig, ProSession)> {
     cfg.bootstrap();
     let session = ProSession::login(&cfg).await?;
     Ok((cfg, session))
+}
+
+async fn run_terminal() -> ResultType<()> {
+    let args: Vec<String> = std::env::args().skip(2).collect();
+    let id = args
+        .first()
+        .filter(|s| !s.starts_with('-'))
+        .cloned()
+        .ok_or_else(|| hbb_common::anyhow::anyhow!("usage: fpremote-agent terminal <id> [--password <pw>] -- <command>"))?;
+    let mut password = String::new();
+    let mut command: Vec<String> = Vec::new();
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--password" => {
+                password = args.get(i + 1).cloned().unwrap_or_default();
+                i += 2;
+            }
+            "--" => {
+                command = args[i + 1..].to_vec();
+                break;
+            }
+            other => {
+                command.push(other.to_owned());
+                i += 1;
+            }
+        }
+    }
+    if command.is_empty() {
+        hbb_common::bail!("no command given; use: terminal <id> --password <pw> -- <command>");
+    }
+    let command = command.join(" ");
+
+    let (cfg, session) = connect().await?;
+    // Fall back to the peer's stored password in the shared address book.
+    if password.is_empty() {
+        if let Ok(devices) = session.devices().await {
+            if let Some(p) = devices
+                .iter()
+                .find(|d| d.id == id && !d.password.is_empty())
+            {
+                password = p.password.clone();
+            }
+        }
+    }
+
+    let run = terminal::run_command(&cfg.key, &session.token, &id, &password, &command).await?;
+    session.logout().await.ok();
+    print!("{}", run.output);
+    if !run.output.ends_with('\n') {
+        println!();
+    }
+    eprintln!("[{} exit {}]", run.platform, run.exit_code);
+    std::process::exit(if run.exit_code == 0 { 0 } else { 1 });
 }
