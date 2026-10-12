@@ -12,21 +12,26 @@ pub struct TerminalRun {
     pub platform: String,
 }
 
-// The controlled PTY echoes the bytes we type, so the exit marker is written
-// with a quote split (`__FP""EXIT__`) in the command we send. The shell's own
-// output has the halves joined (`__FPEXIT__`); the echoed input line never
+// The controlled PTY echoes the bytes we type, so every marker is written with
+// a quote split (e.g. `__FP""START__`) in the command we send. The shell's own
+// output has the halves joined (`__FPSTART__`); the echoed input line never
 // does, so a search for the contiguous marker only ever matches real output.
-const MARK_START: &str = "__FPEXIT__";
+// Output is delimited START..EXIT, so the echoed command and shell prompts fall
+// outside and are excluded.
+const MARK_START: &str = "__FPSTART__";
+const MARK_EXIT: &str = "__FPEXIT__";
 const MARK_END: &str = "__FPEND__";
 
 fn marker_command(command: &str, platform: &str) -> String {
     if platform.to_lowercase().contains("windows") {
         // Default Windows shell is PowerShell; $LASTEXITCODE is best-effort.
         format!(
-            "{command}\r\nWrite-Output (\"__FP\"+\"EXIT__\"+$LASTEXITCODE+\"__FP\"+\"END__\")\r\n"
+            "Write-Output (\"__FP\"+\"START__\")\r\n{command}\r\nWrite-Output (\"__FP\"+\"EXIT__\"+$LASTEXITCODE+\"__FP\"+\"END__\")\r\n"
         )
     } else {
-        format!("{command}\necho \"__FP\"\"EXIT__$?__FP\"\"END__\"\n")
+        format!(
+            "echo \"__FP\"\"START__\"\n{command}\necho \"__FP\"\"EXIT__$?__FP\"\"END__\"\n"
+        )
     }
 }
 
@@ -74,21 +79,23 @@ fn decode(data: &[u8], compressed: bool) -> Vec<u8> {
     }
 }
 
-/// Strip the echoed command line (the one still carrying the split marker) and
-/// everything from the joined marker onward, leaving just the command output.
+/// Extract the command output delimited by the joined START and EXIT markers,
+/// so the echoed command and shell prompts (outside the markers) are excluded.
 fn clean_output(raw: &str) -> String {
-    let cut = raw.find(MARK_START).map(|i| &raw[..i]).unwrap_or(raw);
-    let mut lines: Vec<&str> = cut.lines().collect();
-    lines.retain(|l| !l.contains("__FP\"\"EXIT__") && !l.contains("\"__FP\"+\"EXIT__\""));
-    let mut out = lines.join("\n");
-    while out.ends_with('\n') || out.ends_with('\r') {
-        out.pop();
-    }
-    out.trim_start_matches(['\r', '\n']).to_owned()
+    let body = match (raw.find(MARK_START), raw.find(MARK_EXIT)) {
+        (Some(s), Some(e)) if s < e => {
+            let after_start = raw[s..].find('\n').map(|n| s + n + 1).unwrap_or(e);
+            &raw[after_start.min(e)..e]
+        }
+        // START marker missing: fall back to everything before EXIT.
+        (_, Some(e)) => &raw[..e],
+        _ => raw,
+    };
+    body.trim_matches(['\r', '\n']).to_owned()
 }
 
 fn parse_exit(raw: &str) -> Option<i32> {
-    let start = raw.find(MARK_START)? + MARK_START.len();
+    let start = raw.find(MARK_EXIT)? + MARK_EXIT.len();
     let rest = &raw[start..];
     let end = rest.find(MARK_END)?;
     rest[..end].trim().parse::<i32>().ok()
