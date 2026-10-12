@@ -2,16 +2,25 @@
 //! stdout carries only MCP messages; logs go to the log file and stderr.
 //! Each peer-affecting tool call is recorded in the audit log.
 
-use std::path::Path;
+use std::{collections::HashMap, path::Path};
 
 use hbb_common::{
     log,
-    tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    tokio::{
+        io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+        sync::mpsc,
+    },
     ResultType,
 };
 use serde_json::{json, Value};
 
-use super::{config::AgentConfig, files, pro::ProSession, terminal};
+use crate::client::Data;
+
+use super::{config::AgentConfig, files, pro::ProSession, terminal, tunnel};
+
+/// Live tunnels opened via `open_tunnel`, keyed by local port; the sender stops
+/// the tunnel when `Data::Close` is sent on it.
+type Tunnels = HashMap<i32, mpsc::UnboundedSender<Data>>;
 
 const SERVER_NAME: &str = "fpremote-agent";
 const PROTOCOL_VERSION: &str = "2024-11-05";
@@ -27,6 +36,7 @@ pub async fn serve() -> ResultType<()> {
     let stdin = hbb_common::tokio::io::stdin();
     let mut reader = BufReader::new(stdin).lines();
     let mut stdout = hbb_common::tokio::io::stdout();
+    let mut tunnels: Tunnels = HashMap::new();
 
     while let Some(line) = reader.next_line().await? {
         let line = line.trim();
@@ -53,7 +63,7 @@ pub async fn serve() -> ResultType<()> {
             "ping" => write_msg(&mut stdout, &ok_resp(id, json!({}))).await?,
             "tools/list" => write_msg(&mut stdout, &ok_resp(id, json!({ "tools": tools() }))).await?,
             "tools/call" => {
-                let resp = handle_call(&cfg, &mut session, req.get("params")).await;
+                let resp = handle_call(&cfg, &mut session, &mut tunnels, req.get("params")).await;
                 let result = match resp {
                     Ok(text) => tool_text(&text, false),
                     Err(e) => tool_text(&format!("error: {e}"), true),
@@ -70,6 +80,9 @@ pub async fn serve() -> ResultType<()> {
             }
         }
     }
+    for (_, tx) in tunnels.drain() {
+        let _ = tx.send(Data::Close);
+    }
     session.logout().await.ok();
     Ok(())
 }
@@ -77,6 +90,7 @@ pub async fn serve() -> ResultType<()> {
 async fn handle_call(
     cfg: &AgentConfig,
     session: &mut ProSession,
+    tunnels: &mut Tunnels,
     params: Option<&Value>,
 ) -> ResultType<String> {
     let params = params.cloned().unwrap_or(json!({}));
@@ -151,6 +165,53 @@ async fn handle_call(
             )
             .await?;
             Ok(format!("downloaded {n} bytes to {local}"))
+        }
+        "open_tunnel" => {
+            let num = |k: &str| args.get(k).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let local_port = num("local_port");
+            let remote_host = str_arg("remote_host");
+            let remote_port = num("remote_port");
+            if id.is_empty() || remote_host.is_empty() {
+                return Ok("device_id and remote_host are required".to_owned());
+            }
+            if !(1..=65535).contains(&local_port) || !(1..=65535).contains(&remote_port) {
+                return Ok("local_port and remote_port must be 1-65535".to_owned());
+            }
+            if tunnels.contains_key(&local_port) {
+                return Ok(format!("a tunnel already uses local port {local_port}"));
+            }
+            let password = password_for(session, &id, str_arg("password")).await;
+            let (tx, rx) = mpsc::unbounded_channel::<Data>();
+            let (key, token, id2, host) =
+                (cfg.key.clone(), session.token.clone(), id.clone(), remote_host.clone());
+            hbb_common::tokio::spawn(async move {
+                if let Err(e) = tunnel::run_with_receiver(
+                    &key, &token, &id2, &password, local_port, &host, remote_port, rx,
+                )
+                .await
+                {
+                    log::warn!("tunnel on {local_port} ended: {e}");
+                }
+            });
+            tunnels.insert(local_port, tx);
+            Ok(format!(
+                "tunnel open: localhost:{local_port} -> {remote_host}:{remote_port} via {id}"
+            ))
+        }
+        "list_tunnels" => {
+            let mut ports: Vec<i32> = tunnels.keys().copied().collect();
+            ports.sort_unstable();
+            Ok(serde_json::to_string_pretty(&ports)?)
+        }
+        "close_tunnel" => {
+            let local_port = args.get("local_port").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            match tunnels.remove(&local_port) {
+                Some(tx) => {
+                    let _ = tx.send(Data::Close);
+                    Ok(format!("tunnel on local port {local_port} closed"))
+                }
+                None => Ok(format!("no tunnel on local port {local_port}")),
+            }
         }
         other => Ok(format!("unknown tool: {other}")),
     }
@@ -232,6 +293,35 @@ fn tools() -> Value {
                     "password": { "type": "string" }
                 },
                 "required": ["device_id", "remote_path", "local_path"]
+            }
+        },
+        {
+            "name": "open_tunnel",
+            "description": "Forward localhost:<local_port> on this machine to <remote_host>:<remote_port> as seen from the peer (e.g. a printer, a fiscal device or a service on the clinic network). Stays open until close_tunnel or the server exits.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "device_id": { "type": "string" },
+                    "local_port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+                    "remote_host": { "type": "string", "description": "Host as seen from the peer, e.g. 127.0.0.1 or 192.168.1.50" },
+                    "remote_port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+                    "password": { "type": "string" }
+                },
+                "required": ["device_id", "local_port", "remote_host", "remote_port"]
+            }
+        },
+        {
+            "name": "list_tunnels",
+            "description": "List the local ports of tunnels opened in this session.",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        },
+        {
+            "name": "close_tunnel",
+            "description": "Close the tunnel listening on local_port.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "local_port": { "type": "integer" } },
+                "required": ["local_port"]
             }
         }
     ])
