@@ -4,6 +4,7 @@
 
 mod config;
 mod files;
+mod mcp;
 mod pro;
 mod session;
 mod terminal;
@@ -27,6 +28,7 @@ COMMANDS:
     terminal <id> -- <cmd>              Run a shell command on a peer and print its output
     ls <id> <remote-dir>                List a directory on a peer
     download <id> <remote-file> <local> Copy a file from a peer to this machine
+    mcp                                 Run the MCP server over stdio (for AI agents)
     help                                Show this help
 
 OPTIONS (peer commands):
@@ -86,6 +88,7 @@ async fn run(command: &str) -> ResultType<()> {
         "terminal" => run_terminal().await,
         "ls" => run_ls().await,
         "download" => run_download().await,
+        "mcp" => mcp::serve().await,
         "help" | "--help" | "-h" => {
             print!("{}", USAGE);
             Ok(())

@@ -73,6 +73,22 @@ impl AgentConfig {
         Ok(text.trim().to_owned())
     }
 
+    /// Append one JSON line to the agent's audit log. Every peer-affecting MCP
+    /// call is recorded here so there is a record of what the agent did.
+    pub fn append_audit(entry: &str) {
+        if let Ok(dir) = fp_dir() {
+            let _ = fs::create_dir_all(&dir);
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(dir.join("fpremote-agent-audit.log"))
+            {
+                use std::io::Write as _;
+                let _ = writeln!(f, "{entry}");
+            }
+        }
+    }
+
     /// Point the embedded RustDesk client at our server before any connection.
     /// A standalone binary with no running service reads these straight from
     /// its own config file.
