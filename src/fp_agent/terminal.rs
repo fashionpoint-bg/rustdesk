@@ -104,14 +104,7 @@ pub async fn run_command(
     command: &str,
 ) -> ResultType<TerminalRun> {
     let mut session = connect_and_login(key, token, id, password, ConnType::TERMINAL).await?;
-    let platform = session
-        .interface
-        .get_lch()
-        .read()
-        .unwrap()
-        .info
-        .platform
-        .clone();
+    let platform = session.platform();
 
     session.send(open_terminal(24, 200)).await?;
 

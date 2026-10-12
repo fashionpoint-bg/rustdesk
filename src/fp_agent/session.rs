@@ -113,6 +113,11 @@ pub struct Session {
 }
 
 impl Session {
+    /// The peer's platform as reported in its login PeerInfo (e.g. "Linux", "Windows").
+    pub fn platform(&self) -> String {
+        self.interface.lc.read().unwrap().info.platform.clone()
+    }
+
     /// Send one protobuf message to the peer.
     pub async fn send(&mut self, msg: Message) -> ResultType<()> {
         self.stream.send(&msg).await
