@@ -1,4 +1,4 @@
-use hbb_common::{bail, ResultType};
+use hbb_common::{bail, config::Config, ResultType};
 use serde_derive::Deserialize;
 use serde_json::{json, Value};
 use totp_rs::{Algorithm, Secret, TOTP};
@@ -39,7 +39,7 @@ fn totp_now(secret: &str) -> ResultType<String> {
     let bytes = Secret::Encoded(secret.to_owned())
         .to_bytes()
         .map_err(|e| hbb_common::anyhow::anyhow!("bad TOTP secret: {:?}", e))?;
-    let totp = TOTP::new_unchecked(Algorithm::SHA1, 6, 1, 30, bytes);
+    let totp = TOTP::new_unchecked(Algorithm::SHA1, 6, 1, 30, bytes, None, String::new());
     Ok(totp.generate_current()?)
 }
 
@@ -54,7 +54,7 @@ impl ProSession {
     pub async fn login(cfg: &AgentConfig) -> ResultType<Self> {
         let password = cfg.read_secret("password")?;
         let totp_secret = cfg.read_secret("totp")?;
-        let device_id = crate::ui_interface::get_id();
+        let device_id = Config::get_id();
         let device_uuid = crate::ui_interface::get_uuid();
         let http = reqwest::Client::builder().build()?;
         let url = format!("{}/api/login", cfg.api.trim_end_matches('/'));
