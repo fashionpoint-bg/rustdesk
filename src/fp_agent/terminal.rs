@@ -22,15 +22,33 @@ const MARK_START: &str = "__FPSTART__";
 const MARK_EXIT: &str = "__FPEXIT__";
 const MARK_END: &str = "__FPEND__";
 
+fn is_windows(platform: &str) -> bool {
+    platform.to_lowercase().contains("windows")
+}
+
+/// Sent first (before framing) to quiet the interactive shell: turn off tty
+/// input echo and blank the prompt, so only real command output remains
+/// between the markers. Must be processed before the framed command is sent,
+/// because the tty line discipline echoes earlier input at the kernel layer.
+fn quiet_shell(platform: &str) -> String {
+    if is_windows(platform) {
+        "function prompt { '' }\r\n".to_owned()
+    } else {
+        "stty -echo 2>/dev/null; export PS1='' PS2='' PROMPT_COMMAND=''\n".to_owned()
+    }
+}
+
+/// The framed command: START marker, the command, then the EXIT marker with the
+/// exit status. Markers are quote-split so an echoed copy can never match the
+/// joined form we scan for.
 fn marker_command(command: &str, platform: &str) -> String {
-    if platform.to_lowercase().contains("windows") {
-        // Default Windows shell is PowerShell; $LASTEXITCODE is best-effort.
+    if is_windows(platform) {
         format!(
-            "Write-Output (\"__FP\"+\"START__\")\r\n{command}\r\nWrite-Output (\"__FP\"+\"EXIT__\"+$LASTEXITCODE+\"__FP\"+\"END__\")\r\n"
+            "Write-Output (\"__FP\"+\"START__\"); {command}; Write-Output (\"__FP\"+\"EXIT__\"+$LASTEXITCODE+\"__FP\"+\"END__\")\r\n"
         )
     } else {
         format!(
-            "echo \"__FP\"\"START__\"\n{command}\necho \"__FP\"\"EXIT__$?__FP\"\"END__\"\n"
+            "echo \"__FP\"\"START__\"; {command}\necho \"__FP\"\"EXIT__$?__FP\"\"END__\"\n"
         )
     }
 }
@@ -115,37 +133,46 @@ pub async fn run_command(
 
     session.send(open_terminal(24, 200)).await?;
 
-    let mut terminal_id = 0;
-    let mut opened = false;
-    let mut sent_command = false;
+    // Wait for the shell to open.
+    let terminal_id = loop {
+        let Some(msg) = session.next_message().await? else {
+            bail!("no response opening terminal on {id}");
+        };
+        if let Some(message::Union::TerminalResponse(resp)) = msg.union {
+            match resp.union {
+                Some(terminal_response::Union::Opened(o)) => {
+                    if !o.success {
+                        bail!("terminal refused on {id}: {}", o.message);
+                    }
+                    break o.terminal_id;
+                }
+                Some(terminal_response::Union::Error(e)) => {
+                    bail!("terminal error on {id}: {}", e.message);
+                }
+                _ => {}
+            }
+        }
+    };
+
+    // Quiet the shell, then let the tty line discipline apply it before framing.
+    session
+        .send(terminal_data(terminal_id, &quiet_shell(&platform)))
+        .await?;
+    hbb_common::tokio::time::sleep(Duration::from_millis(400)).await;
+    session
+        .send(terminal_data(terminal_id, &marker_command(command, &platform)))
+        .await?;
+
     let mut raw = String::new();
     let deadline = Instant::now() + Duration::from_secs(60);
-
     while Instant::now() < deadline {
         let Some(msg) = session.next_message().await? else {
-            if opened {
-                // Idle gap after output with no marker yet: keep waiting until deadline.
-                continue;
-            }
-            bail!("no response opening terminal on {id}");
+            continue; // idle read gap; keep waiting for the marker until deadline
         };
         let Some(message::Union::TerminalResponse(resp)) = msg.union else {
             continue;
         };
         match resp.union {
-            Some(terminal_response::Union::Opened(o)) => {
-                if !o.success {
-                    bail!("terminal refused on {id}: {}", o.message);
-                }
-                terminal_id = o.terminal_id;
-                opened = true;
-                if !sent_command {
-                    session
-                        .send(terminal_data(terminal_id, &marker_command(command, &platform)))
-                        .await?;
-                    sent_command = true;
-                }
-            }
             Some(terminal_response::Union::Data(d)) => {
                 raw.push_str(&String::from_utf8_lossy(&decode(&d.data, d.compressed)));
                 if parse_exit(&raw).is_some() {
