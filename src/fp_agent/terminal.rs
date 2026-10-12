@@ -152,7 +152,7 @@ pub async fn run_command(
             Some(terminal_response::Union::Error(e)) => {
                 bail!("terminal error on {id}: {}", e.message);
             }
-            None => {}
+            _ => {}
         }
     }
 
