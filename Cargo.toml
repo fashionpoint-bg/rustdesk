@@ -20,6 +20,11 @@ path = "src/naming.rs"
 name = "service"
 path = "src/service.rs"
 
+[[bin]]
+name = "fpremote-agent"
+path = "src/bin/fpremote_agent.rs"
+required-features = ["fp-agent"]
+
 [features]
 inline = []
 use_samplerate = ["samplerate", "libsamplerate-sys"]
@@ -46,6 +51,9 @@ unix-file-copy-paste = [
     "clipboard/unix-file-copy-paste",
 ]
 screencapturekit = ["cpal/screencapturekit"]
+# FPRemote headless client for AI agents (fpremote-agent binary). See
+# src/fp_agent and the fp-remote repo's docs/agent.md.
+fp-agent = []
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
