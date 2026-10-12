@@ -109,7 +109,8 @@ fn clean_output(raw: &str) -> String {
         (_, Some(e)) => &raw[..e],
         _ => raw,
     };
-    body.trim_matches(['\r', '\n']).to_owned()
+    // PTYs emit CRLF; normalize to LF for clean agent-facing text.
+    body.replace("\r\n", "\n").trim_matches(['\r', '\n']).to_owned()
 }
 
 fn parse_exit(raw: &str) -> Option<i32> {
