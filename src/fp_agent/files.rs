@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::Path,
+    time::{Duration, Instant},
+};
 
 use hbb_common::{bail, rendezvous_proto::ConnType, ResultType};
 use base::{
@@ -39,9 +42,15 @@ pub async fn list(
 ) -> ResultType<Vec<Entry>> {
     let mut session = connect_and_login(key, token, id, password, ConnType::FILE_TRANSFER).await?;
     session.send(read_dir_msg(path, include_hidden)).await?;
+    // The peer answers listings from its connection manager process; bound the
+    // wait so a peer without one fails cleanly instead of hanging the agent.
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
+        if Instant::now() >= deadline {
+            bail!("no listing of {path} from {id} within 30s (is a user logged in on the peer?)");
+        }
         let Some(msg) = session.next_message().await? else {
-            bail!("no directory listing from {id} for {path}");
+            continue;
         };
         if let Some(message::Union::FileResponse(fr)) = msg.union {
             match fr.union {
@@ -68,6 +77,10 @@ pub async fn list(
 }
 
 /// Download one file from the peer to `local_path`. Returns the byte count.
+///
+/// A single-file transfer carries an empty entry name (base fs: "the destination
+/// file path is carried by transfer metadata"), so the write job's data source
+/// must be the full destination file path, not its directory.
 pub async fn download(
     key: &str,
     token: &str,
@@ -76,11 +89,12 @@ pub async fn download(
     remote_path: &str,
     local_path: &Path,
 ) -> ResultType<u64> {
-    let local_dir = local_path
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."));
-    std::fs::create_dir_all(&local_dir)?;
+    if local_path.is_dir() {
+        bail!("{} is a directory; give the destination file path", local_path.display());
+    }
+    if let Some(parent) = local_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)?;
+    }
 
     let mut session = connect_and_login(key, token, id, password, ConnType::FILE_TRANSFER).await?;
     let job_id = 0;
@@ -88,7 +102,7 @@ pub async fn download(
         job_id,
         JobType::Generic,
         remote_path.to_owned(),
-        DataSource::FilePath(local_dir.clone()),
+        DataSource::FilePath(local_path.to_path_buf()),
         0,
         false,
         true,  // is_remote: the source is the remote peer
@@ -98,7 +112,6 @@ pub async fn download(
         .send(fs::new_send(job_id, JobType::Generic, remote_path.to_owned(), 0, false))
         .await?;
 
-    let mut entry_name = String::new();
     loop {
         let Some(msg) = session.next_message().await? else {
             bail!("download of {remote_path} from {id} stalled");
@@ -108,11 +121,10 @@ pub async fn download(
         };
         match fr.union {
             Some(file_response::Union::Dir(fd)) => {
-                job.set_files(fd.entries.to_vec())?;
-                entry_name = fd.entries.first().map(|e| e.name.clone()).unwrap_or_default();
-                if job.files().is_empty() {
-                    bail!("{remote_path} not found on {id}");
+                if fd.entries.len() != 1 {
+                    bail!("{remote_path} on {id} is not a single file ({} entries)", fd.entries.len());
                 }
+                job.set_files(fd.entries.to_vec())?;
             }
             Some(file_response::Union::Digest(d)) if !d.is_upload => {
                 job.set_digest(d.file_size, d.last_modified);
@@ -139,15 +151,8 @@ pub async fn download(
         }
     }
 
-    // The job writes to <dir>/<entry>; move it to the requested target name.
-    let written = if entry_name.is_empty() {
-        local_path.to_path_buf()
-    } else {
-        local_dir.join(&entry_name)
-    };
-    if written != local_path && written.exists() {
-        std::fs::rename(&written, local_path)?;
+    if let Some(err) = job.job_error() {
+        bail!("download {remote_path} from {id}: {err}");
     }
-    let size = std::fs::metadata(local_path).map(|m| m.len()).unwrap_or(0);
-    Ok(size)
+    Ok(std::fs::metadata(local_path)?.len())
 }
