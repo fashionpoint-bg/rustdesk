@@ -3,11 +3,14 @@
 //! repo for the design. Built only with the `fp-agent` feature.
 
 mod config;
+mod files;
 mod pro;
 mod session;
 mod terminal;
 
-use hbb_common::ResultType;
+use std::path::Path;
+
+use hbb_common::{anyhow::anyhow, bail, ResultType};
 
 use config::AgentConfig;
 use pro::ProSession;
@@ -19,17 +22,22 @@ USAGE:
     fpremote-agent <COMMAND>
 
 COMMANDS:
-    login                       Log in to the Pro server and report the session
-    devices                     List the clinic computers this account can reach
-    terminal <id> -- <cmd>      Run a shell command on a peer and print its output
-    help                        Show this help
+    login                               Log in to the Pro server and report the session
+    devices                             List the clinic computers this account can reach
+    terminal <id> -- <cmd>              Run a shell command on a peer and print its output
+    ls <id> <remote-dir>                List a directory on a peer
+    download <id> <remote-file> <local> Copy a file from a peer to this machine
+    help                                Show this help
 
-OPTIONS for terminal:
-    --password <pw>             Connect password for the peer (else taken from the shared address book)
+OPTIONS (peer commands):
+    --password <pw>    Connect password for the peer (else taken from the shared address book)
 ";
 
 /// Entry point called by the thin binary. Runs one command to completion.
 pub fn main() {
+    // Before anything touches config or logs, so both live under the agent's
+    // own name and never mix with a RustDesk install on the same machine.
+    *hbb_common::config::APP_NAME.write().unwrap() = config::APP_NAME.to_owned();
     hbb_common::init_log(false, "fpremote-agent");
     let args: Vec<String> = std::env::args().skip(1).collect();
     let command = args.first().map(String::as_str).unwrap_or("help");
@@ -69,17 +77,15 @@ async fn run(command: &str) -> ResultType<()> {
                 let name = if d.alias.is_empty() { &d.id } else { &d.alias };
                 println!(
                     "  {}\t{}\t{}\t{}\t{}",
-                    d.id,
-                    name,
-                    d.device_group_name,
-                    d.platform,
-                    d.hostname
+                    d.id, name, d.device_group_name, d.platform, d.hostname
                 );
             }
             session.logout().await?;
             Ok(())
         }
         "terminal" => run_terminal().await,
+        "ls" => run_ls().await,
+        "download" => run_download().await,
         "help" | "--help" | "-h" => {
             print!("{}", USAGE);
             Ok(())
@@ -98,15 +104,23 @@ async fn connect() -> ResultType<(AgentConfig, ProSession)> {
     Ok((cfg, session))
 }
 
-async fn run_terminal() -> ResultType<()> {
+/// Peer-command arguments: the peer id, an optional `--password`, and the
+/// remaining positional arguments (everything after `--` is kept verbatim).
+struct PeerArgs {
+    id: String,
+    password: String,
+    rest: Vec<String>,
+}
+
+fn peer_args(usage: &str) -> ResultType<PeerArgs> {
     let args: Vec<String> = std::env::args().skip(2).collect();
     let id = args
         .first()
         .filter(|s| !s.starts_with('-'))
         .cloned()
-        .ok_or_else(|| hbb_common::anyhow::anyhow!("usage: fpremote-agent terminal <id> [--password <pw>] -- <command>"))?;
+        .ok_or_else(|| anyhow!("usage: {usage}"))?;
     let mut password = String::new();
-    let mut command: Vec<String> = Vec::new();
+    let mut rest = Vec::new();
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -115,39 +129,92 @@ async fn run_terminal() -> ResultType<()> {
                 i += 2;
             }
             "--" => {
-                command = args[i + 1..].to_vec();
+                rest.extend_from_slice(&args[i + 1..]);
                 break;
             }
             other => {
-                command.push(other.to_owned());
+                rest.push(other.to_owned());
                 i += 1;
             }
         }
     }
-    if command.is_empty() {
-        hbb_common::bail!("no command given; use: terminal <id> --password <pw> -- <command>");
-    }
-    let command = command.join(" ");
+    Ok(PeerArgs { id, password, rest })
+}
 
-    let (cfg, session) = connect().await?;
-    // Fall back to the peer's stored password in the shared address book.
-    if password.is_empty() {
-        if let Ok(devices) = session.devices().await {
-            if let Some(p) = devices
-                .iter()
+/// Use the given password, else the peer's stored one in a shared address book.
+async fn resolve_password(session: &ProSession, id: &str, password: String) -> String {
+    if !password.is_empty() {
+        return password;
+    }
+    session
+        .devices()
+        .await
+        .ok()
+        .and_then(|devices| {
+            devices
+                .into_iter()
                 .find(|d| d.id == id && !d.password.is_empty())
-            {
-                password = p.password.clone();
-            }
-        }
-    }
+                .map(|d| d.password)
+        })
+        .unwrap_or_default()
+}
 
-    let run = terminal::run_command(&cfg.key, &session.token, &id, &password, &command).await?;
+async fn run_terminal() -> ResultType<()> {
+    let a = peer_args("fpremote-agent terminal <id> [--password <pw>] -- <command>")?;
+    if a.rest.is_empty() {
+        bail!("no command given; use: terminal <id> --password <pw> -- <command>");
+    }
+    let command = a.rest.join(" ");
+    let (cfg, session) = connect().await?;
+    let password = resolve_password(&session, &a.id, a.password).await;
+    let run = terminal::run_command(&cfg.key, &session.token, &a.id, &password, &command).await;
     session.logout().await.ok();
+    let run = run?;
     print!("{}", run.output);
     if !run.output.ends_with('\n') {
         println!();
     }
     eprintln!("[{} exit {}]", run.platform, run.exit_code);
     std::process::exit(if run.exit_code == 0 { 0 } else { 1 });
+}
+
+async fn run_ls() -> ResultType<()> {
+    let a = peer_args("fpremote-agent ls <id> <remote-dir> [--password <pw>]")?;
+    let path = a.rest.first().cloned().ok_or_else(|| anyhow!("missing <remote-dir>"))?;
+    let (cfg, session) = connect().await?;
+    let password = resolve_password(&session, &a.id, a.password).await;
+    let entries = files::list(&cfg.key, &session.token, &a.id, &password, &path, false).await;
+    session.logout().await.ok();
+    for e in entries? {
+        println!(
+            "{}\t{}\t{}\t{}",
+            if e.is_dir { "d" } else { "-" },
+            e.size,
+            e.modified,
+            e.name
+        );
+    }
+    Ok(())
+}
+
+async fn run_download() -> ResultType<()> {
+    let a = peer_args("fpremote-agent download <id> <remote-file> <local> [--password <pw>]")?;
+    let (remote, local) = match a.rest.as_slice() {
+        [r, l, ..] => (r.clone(), l.clone()),
+        _ => bail!("need <remote-file> and <local>"),
+    };
+    let (cfg, session) = connect().await?;
+    let password = resolve_password(&session, &a.id, a.password).await;
+    let n = files::download(
+        &cfg.key,
+        &session.token,
+        &a.id,
+        &password,
+        &remote,
+        Path::new(&local),
+    )
+    .await;
+    session.logout().await.ok();
+    println!("downloaded {} bytes to {}", n?, local);
+    Ok(())
 }
