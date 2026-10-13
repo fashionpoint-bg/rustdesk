@@ -1,4 +1,7 @@
-use std::time::{Duration, Instant};
+use std::{
+    fmt::Write as _,
+    time::{Duration, Instant},
+};
 
 use hbb_common::{bail, compress, log, rendezvous_proto::ConnType, ResultType};
 use base::message_proto::*;
@@ -40,34 +43,77 @@ fn quiet_shell(platform: &str) -> String {
     }
 }
 
-/// The framed command: START marker, the command, then the EXIT marker with the
-/// exit status. Markers are quote-split so an echoed copy can never match the
-/// joined form we scan for.
-///
-/// PowerShell: a terminating error (`throw`, `-ErrorAction Stop`) drops the
-/// rest of the typed line, EXIT marker included, so the command runs in
-/// try/catch and a caught error is printed and counts as a failure.
-/// `$LASTEXITCODE` is set only by native programs and stays empty after
-/// cmdlets, so the status comes from `$?` first: success is 0, a failed native
-/// program keeps its own code, any other failure is 1.
-///
-/// POSIX shells: the command runs in a subshell with stdin from /dev/null.
-/// `exit` then ends only the subshell, so its status still reaches the EXIT
-/// marker, and a command that reads input gets end of file instead of waiting
-/// for a key or reading the EXIT line typed after it. The no-op `:` first
-/// keeps an empty or comment-only command from leaving an empty `( )`, a
-/// syntax error. `exit` in PowerShell ends the shell itself; the call then
-/// fails at once, with the output so far.
-fn marker_command(command: &str, platform: &str) -> String {
+/// Every line typed into a POSIX shell stays under the 4096-byte line limit of
+/// a terminal in canonical mode (a shell without a line editor, such as dash).
+const POSIX_CHUNK: usize = 3000;
+/// Length of each base64 line typed into PowerShell.
+const PS_CHUNK: usize = 2000;
+
+/// POSIX run line. `$__fp` holds the command as `\0NNN` octal escapes;
+/// `printf %b` turns them back into the command, which runs with `eval` in a
+/// subshell with stdin from /dev/null: `exit` ends only the subshell, so its
+/// status still reaches the EXIT marker, and a command that reads input gets
+/// end of file instead of waiting for a key.
+const POSIX_RUN: &str = r#"echo "__FP""START__"; ( eval "$(printf '%b' "$__fp")" ) </dev/null; echo "__FP""EXIT__$?__FP""END__""#;
+
+/// Appended to the PowerShell command inside the encoded script, so `$?` is
+/// read right after the command's own last statement (after Invoke-Expression
+/// it only says that Invoke-Expression ran).
+const PS_STATUS: &str = "\n$__fpok=$?; $__fpec=$LASTEXITCODE";
+
+/// PowerShell run line. `$__fps` holds the script as base64; it runs with
+/// Invoke-Expression in try/catch, because a terminating error (`throw`,
+/// `-ErrorAction Stop`, a parse error) would otherwise drop the rest of the
+/// line, EXIT marker included; a caught error is printed and counts as a
+/// failure. `$LASTEXITCODE` is set only by native programs, so the status is
+/// 0 when the last statement succeeded, else the native exit code, else 1.
+/// `exit` in PowerShell ends the shell itself; the call then fails at once,
+/// with the output so far.
+const PS_RUN: &str = r#"Write-Output ("__FP"+"START__"); $__fpt=$false; $__fpok=$false; $__fpec=$null; try { Invoke-Expression ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($__fps))) } catch { $__fpt=$true; Write-Output ($_ | Out-String) }; Write-Output ("__FP"+"EXIT__"+$(if($__fpt){1}elseif($__fpok){0}elseif($null -ne $__fpec -and $__fpec -ne 0){$__fpec}else{1})+"__FP"+"END__")"#;
+
+/// The command as the lines typed into the shell: assignments that carry it
+/// encoded, then the run line, which prints the START marker, runs it and
+/// prints the EXIT marker with its status. The shell's line editor never sees
+/// the command itself; typed as it is, it was open to history expansion (`!`),
+/// tab completion, and an unbalanced quote or bracket waiting for more input
+/// until the call timed out. Markers are quote-split so an echoed copy can
+/// never match the joined form we scan for.
+fn framed_command(command: &str, platform: &str) -> String {
     if is_windows(platform) {
-        format!(
-            "Write-Output (\"__FP\"+\"START__\"); $__fpt=$false; try {{ {command} }} catch {{ $__fpt=$true; Write-Output ($_ | Out-String) }}; $__fpok=$? -and -not $__fpt; $__fpec=$LASTEXITCODE; Write-Output (\"__FP\"+\"EXIT__\"+$(if($__fpok){{0}}elseif($null -ne $__fpec -and $__fpec -ne 0){{$__fpec}}else{{1}})+\"__FP\"+\"END__\")\r\n"
-        )
+        let script = format!("{command}{PS_STATUS}");
+        let b64 = hbb_common::sodiumoxide::base64::encode(
+            script.as_bytes(),
+            hbb_common::sodiumoxide::base64::Variant::Original,
+        );
+        let mut lines = assign_lines(&b64, PS_CHUNK, "$__fps='", "$__fps+='");
+        lines.push(PS_RUN.to_owned());
+        lines.join("\r\n") + "\r\n"
     } else {
-        format!(
-            "echo \"__FP\"\"START__\"; (\n:\n{command}\n) </dev/null\necho \"__FP\"\"EXIT__$?__FP\"\"END__\"\n"
-        )
+        let mut octal = String::with_capacity(command.len() * 5);
+        for b in command.bytes() {
+            let _ = write!(octal, "\\0{b:03o}");
+        }
+        let mut lines = assign_lines(&octal, POSIX_CHUNK, "__fp='", "__fp=\"$__fp\"'");
+        lines.push(POSIX_RUN.to_owned());
+        lines.join("\n") + "\n"
     }
+}
+
+/// Split an ASCII payload into single-quoted shell assignments: the first line
+/// assigns, the rest append. An empty payload still assigns an empty value.
+fn assign_lines(payload: &str, size: usize, first: &str, next: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut start = 0;
+    loop {
+        let end = (start + size).min(payload.len());
+        let prefix = if start == 0 { first } else { next };
+        lines.push(format!("{prefix}{}'", &payload[start..end]));
+        start = end;
+        if start >= payload.len() {
+            break;
+        }
+    }
+    lines
 }
 
 fn terminal_data(terminal_id: i32, text: &str) -> Message {
@@ -242,7 +288,7 @@ pub async fn run_command(
         .await?;
     hbb_common::tokio::time::sleep(Duration::from_millis(400)).await;
     session
-        .send(terminal_data(terminal_id, &marker_command(command, &platform)))
+        .send(terminal_data(terminal_id, &framed_command(command, &platform)))
         .await?;
 
     let mut raw = String::new();
