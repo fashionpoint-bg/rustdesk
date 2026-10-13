@@ -238,10 +238,13 @@ pub async fn mkdir(key: &str, token: &str, id: &str, password: &str, path: &str)
     await_result(&mut session, id, &format!("mkdir {path}"), job_id).await
 }
 
-/// Remove a file, or an empty directory (with empty subdirectories), on the
-/// peer. The peer's directory removal deletes empty directories only, as in
-/// the official client, which deletes the files first; a directory with files
-/// in it is refused there, and the terminal is the tool for that.
+/// Remove a file, or an empty directory, on the peer. A directory goes with
+/// `recursive: false`, which the peer turns into a plain `remove_dir` that
+/// fails on a directory with anything in it. The official client sends
+/// `recursive: true` after deleting the files itself; with that flag the peer
+/// ignores the failure, answers Done for a directory that is still there and
+/// deletes the symlinks and empty subdirectories inside it. The terminal is the
+/// tool for removing a tree.
 pub async fn remove(
     key: &str,
     token: &str,
@@ -257,7 +260,7 @@ pub async fn remove(
         action.set_remove_dir(FileRemoveDir {
             id: job_id,
             path: path.to_owned(),
-            recursive: true,
+            recursive: false,
             ..Default::default()
         });
     } else {
