@@ -134,6 +134,12 @@ impl Session {
         self.interface.lc.read().unwrap().info.platform.clone()
     }
 
+    /// The peer's displays as reported in its login PeerInfo (remote-control
+    /// sessions only): origin and size in the peer's virtual desktop.
+    pub fn displays(&self) -> Vec<DisplayInfo> {
+        self.interface.lc.read().unwrap().info.displays.clone()
+    }
+
     /// Send one protobuf message to the peer.
     pub async fn send(&mut self, msg: Message) -> ResultType<()> {
         self.stream.send(&msg).await

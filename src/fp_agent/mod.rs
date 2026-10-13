@@ -6,6 +6,7 @@ mod config;
 mod files;
 mod mcp;
 mod pro;
+mod screen;
 mod session;
 mod terminal;
 mod tunnel;
@@ -31,11 +32,17 @@ COMMANDS:
     download <id> <remote-file> <local> Copy a file from a peer to this machine
     tunnel <id> <local-port> <remote-host> <remote-port>
                                         Forward localhost:<local-port> to <remote-host>:<remote-port> as seen from the peer
+    screenshot <id> <out.png>           Save a screenshot of the peer's display (last resort: shows patient data)
+    mouse <id> <action> <x> <y>         move | click | double_click | right_click | scroll (with --dy N)
+    key <id> <key>                      Press a key or combination: enter, esc, f5, ctrl+c, alt+f4, ...
+    type <id> -- <text>                 Type text on the peer
     mcp                                 Run the MCP server over stdio (for AI agents)
     help                                Show this help
 
 OPTIONS (peer commands):
     --password <pw>    Connect password for the peer (else taken from the shared address book)
+    --display <n>      Display for screenshot/mouse (0 = primary)
+    --dy <n>           Wheel notches for mouse scroll (positive = up)
 ";
 
 /// Entry point called by the thin binary. Runs one command to completion.
@@ -92,6 +99,10 @@ async fn run(command: &str) -> ResultType<()> {
         "ls" => run_ls().await,
         "download" => run_download().await,
         "tunnel" => run_tunnel().await,
+        "screenshot" => run_screenshot().await,
+        "mouse" => run_mouse().await,
+        "key" => run_keyboard(false).await,
+        "type" => run_keyboard(true).await,
         "mcp" => mcp::serve().await,
         "help" | "--help" | "-h" => {
             print!("{}", USAGE);
@@ -254,5 +265,83 @@ async fn run_download() -> ResultType<()> {
     .await;
     session.logout().await.ok();
     println!("downloaded {} bytes to {}", n?, local);
+    Ok(())
+}
+
+/// Remove `--<name> <value>` from positional args and parse the value.
+fn take_int_flag(rest: &mut Vec<String>, name: &str) -> ResultType<Option<i32>> {
+    let Some(i) = rest.iter().position(|a| a == name) else {
+        return Ok(None);
+    };
+    let value = rest.get(i + 1).cloned().ok_or_else(|| anyhow!("{name} needs a value"))?;
+    rest.drain(i..=i + 1);
+    Ok(Some(value.parse::<i32>().map_err(|_| anyhow!("bad {name}: {value}"))?))
+}
+
+async fn run_screenshot() -> ResultType<()> {
+    let mut a = peer_args("fpremote-agent screenshot <id> <out.png> [--display <n>] [--password <pw>]")?;
+    let display = take_int_flag(&mut a.rest, "--display")?.unwrap_or(0);
+    let out = a.rest.first().cloned().ok_or_else(|| anyhow!("missing <out.png>"))?;
+    let (cfg, session) = connect().await?;
+    let password = resolve_password(&session, &a.id, a.password).await;
+    let shot = screen::screenshot_to_file(
+        &cfg.key,
+        &session.token,
+        &a.id,
+        &password,
+        display,
+        Path::new(&out),
+    )
+    .await;
+    session.logout().await.ok();
+    let shot = shot?;
+    println!("saved {}x{} screenshot ({} bytes) to {}", shot.width, shot.height, shot.png.len(), out);
+    Ok(())
+}
+
+async fn run_mouse() -> ResultType<()> {
+    let mut a = peer_args(
+        "fpremote-agent mouse <id> <move|click|double_click|right_click|scroll> <x> <y> [--dy <n>] [--display <n>]",
+    )?;
+    let display = take_int_flag(&mut a.rest, "--display")?.unwrap_or(0);
+    let dy = take_int_flag(&mut a.rest, "--dy")?.unwrap_or(0);
+    let (action, x, y) = match a.rest.as_slice() {
+        [act, x, y, ..] => (
+            screen::MouseAction::parse(act, dy)?,
+            x.parse::<i32>().map_err(|_| anyhow!("bad <x>: {x}"))?,
+            y.parse::<i32>().map_err(|_| anyhow!("bad <y>: {y}"))?,
+        ),
+        _ => bail!("need <action> <x> <y>"),
+    };
+    let (cfg, session) = connect().await?;
+    let password = resolve_password(&session, &a.id, a.password).await;
+    let r = screen::mouse(&cfg.key, &session.token, &a.id, &password, display, action, x, y).await;
+    session.logout().await.ok();
+    r?;
+    println!("mouse {:?} at {x},{y} on display {display}", action);
+    Ok(())
+}
+
+async fn run_keyboard(typing: bool) -> ResultType<()> {
+    let a = peer_args(if typing {
+        "fpremote-agent type <id> -- <text>"
+    } else {
+        "fpremote-agent key <id> <key>"
+    })?;
+    let what = a.rest.join(" ");
+    if what.is_empty() {
+        bail!("nothing to send");
+    }
+    let action = if typing {
+        screen::KeyboardAction::Type(&what)
+    } else {
+        screen::KeyboardAction::Press(&what)
+    };
+    let (cfg, session) = connect().await?;
+    let password = resolve_password(&session, &a.id, a.password).await;
+    let r = screen::keyboard(&cfg.key, &session.token, &a.id, &password, action).await;
+    session.logout().await.ok();
+    r?;
+    println!("{} sent", if typing { "text" } else { "key" });
     Ok(())
 }
