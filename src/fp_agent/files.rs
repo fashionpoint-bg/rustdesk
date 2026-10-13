@@ -11,6 +11,23 @@ use base::{
 
 use super::session::{connect_and_login, Session};
 
+/// Id of the one transfer job a call runs. Not 0: unasked-for messages carry
+/// id 0, such as the listing below.
+const JOB_ID: i32 = 1;
+
+/// Whether a listing the peer sent is for `requested`. Right after a file
+/// transfer login the peer sends, unasked, a listing of the folder the login
+/// names; the agent names none, so that is the home folder (seen on Windows
+/// 13.10.2026: every `ls` returned it). A listing carries the path it read as
+/// it was sent, so compare loosely: separators, trailing ones, letter case. An
+/// empty request means the home folder, which any listing then answers.
+fn is_listing_for(listed: &str, requested: &str) -> bool {
+    fn norm(p: &str) -> String {
+        p.replace('\\', "/").trim_end_matches('/').to_lowercase()
+    }
+    requested.trim().is_empty() || norm(listed) == norm(requested)
+}
+
 fn read_dir_msg(path: &str, include_hidden: bool) -> Message {
     let mut action = FileAction::new();
     action.set_read_dir(ReadDir {
@@ -51,7 +68,7 @@ pub async fn list(
         };
         if let Some(message::Union::FileResponse(fr)) = msg.union {
             match fr.union {
-                Some(file_response::Union::Dir(fd)) => {
+                Some(file_response::Union::Dir(fd)) if is_listing_for(&fd.path, path) => {
                     return Ok(fd
                         .entries
                         .into_iter()
@@ -94,7 +111,7 @@ pub async fn download(
     }
 
     let mut session = connect_and_login(key, token, id, password, ConnType::FILE_TRANSFER).await?;
-    let job_id = 0;
+    let job_id = JOB_ID;
     let mut job = TransferJob::new_write(
         job_id,
         JobType::Generic,
@@ -117,13 +134,14 @@ pub async fn download(
             continue;
         };
         match fr.union {
-            Some(file_response::Union::Dir(fd)) => {
+            // The listing the peer sends unasked after login has id 0.
+            Some(file_response::Union::Dir(fd)) if fd.id == job_id => {
                 if fd.entries.len() != 1 {
                     bail!("{remote_path} on {id} is not a single file ({} entries)", fd.entries.len());
                 }
                 job.set_files(fd.entries.to_vec())?;
             }
-            Some(file_response::Union::Digest(d)) if !d.is_upload => {
+            Some(file_response::Union::Digest(d)) if !d.is_upload && d.id == job_id => {
                 job.set_digest(d.file_size, d.last_modified);
                 let req = FileTransferSendConfirmRequest {
                     id: d.id,
@@ -141,7 +159,7 @@ pub async fn download(
                 job.modify_time();
                 break;
             }
-            Some(file_response::Union::Error(e)) => {
+            Some(file_response::Union::Error(e)) if e.id == job_id => {
                 bail!("download {remote_path} from {id}: {}", e.error)
             }
             _ => {}
@@ -197,7 +215,7 @@ pub async fn upload(
         bail!("{} is not a file", local_path.display());
     }
     let size = std::fs::metadata(local_path)?.len();
-    let job_id = 0;
+    let job_id = JOB_ID;
     let job = TransferJob::new_read(
         job_id,
         JobType::Generic,
@@ -227,7 +245,7 @@ pub async fn upload(
 /// Create a directory on the peer.
 pub async fn mkdir(key: &str, token: &str, id: &str, password: &str, path: &str) -> ResultType<()> {
     let mut session = connect_and_login(key, token, id, password, ConnType::FILE_TRANSFER).await?;
-    let job_id = 1;
+    let job_id = JOB_ID;
     let mut action = FileAction::new();
     action.set_create(FileDirCreate {
         id: job_id,
@@ -254,7 +272,7 @@ pub async fn remove(
     is_dir: bool,
 ) -> ResultType<()> {
     let mut session = connect_and_login(key, token, id, password, ConnType::FILE_TRANSFER).await?;
-    let job_id = 1;
+    let job_id = JOB_ID;
     let mut action = FileAction::new();
     if is_dir {
         action.set_remove_dir(FileRemoveDir {
