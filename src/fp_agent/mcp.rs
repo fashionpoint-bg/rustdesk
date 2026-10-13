@@ -233,6 +233,35 @@ async fn text_tool(
                 None => Ok(format!("no tunnel on local port {local_port}")),
             }
         }
+        "upload_file" => {
+            let (local, remote) = (str_arg("local_path"), str_arg("remote_path"));
+            if id.is_empty() || local.is_empty() || remote.is_empty() {
+                bail!("device_id, local_path and remote_path are required");
+            }
+            let password = password_for(session, &id, str_arg("password")).await;
+            let n = files::upload(&cfg.key, &session.token, &id, &password, Path::new(&local), &remote)
+                .await?;
+            Ok(format!("uploaded {n} bytes to {remote} on {id}"))
+        }
+        "make_directory" => {
+            let path = str_arg("path");
+            if id.is_empty() || path.is_empty() {
+                bail!("device_id and path are required");
+            }
+            let password = password_for(session, &id, str_arg("password")).await;
+            files::mkdir(&cfg.key, &session.token, &id, &password, &path).await?;
+            Ok(format!("created {path} on {id}"))
+        }
+        "remove_path" => {
+            let path = str_arg("path");
+            if id.is_empty() || path.is_empty() {
+                bail!("device_id and path are required");
+            }
+            let is_dir = args.get("is_directory").and_then(|v| v.as_bool()).unwrap_or(false);
+            let password = password_for(session, &id, str_arg("password")).await;
+            files::remove(&cfg.key, &session.token, &id, &password, &path, is_dir).await?;
+            Ok(format!("removed {path} on {id}"))
+        }
         "mouse" => {
             require_reason(args)?;
             if id.is_empty() {
@@ -381,6 +410,47 @@ fn tools() -> Value {
                     "password": { "type": "string" }
                 },
                 "required": ["device_id", "remote_path", "local_path"]
+            }
+        },
+        {
+            "name": "upload_file",
+            "description": "Copy one file from this machine to a peer, replacing the file at remote_path (served by the peer's connection manager; a user must be logged in on the peer).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "device_id": { "type": "string" },
+                    "local_path": { "type": "string" },
+                    "remote_path": { "type": "string", "description": "Full destination file path on the peer" },
+                    "password": { "type": "string" }
+                },
+                "required": ["device_id", "local_path", "remote_path"]
+            }
+        },
+        {
+            "name": "make_directory",
+            "description": "Create a directory on a peer (served by the peer's connection manager).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "device_id": { "type": "string" },
+                    "path": { "type": "string" },
+                    "password": { "type": "string" }
+                },
+                "required": ["device_id", "path"]
+            }
+        },
+        {
+            "name": "remove_path",
+            "description": "Remove a file, or an empty directory (is_directory: true), on a peer. A directory with files in it is refused; use run_terminal for that.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "device_id": { "type": "string" },
+                    "path": { "type": "string" },
+                    "is_directory": { "type": "boolean" },
+                    "password": { "type": "string" }
+                },
+                "required": ["device_id", "path"]
             }
         },
         {

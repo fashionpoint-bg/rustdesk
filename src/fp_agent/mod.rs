@@ -30,6 +30,10 @@ COMMANDS:
     terminal <id> -- <cmd>              Run a shell command on a peer and print its output
     ls <id> <remote-dir>                List a directory on a peer
     download <id> <remote-file> <local> Copy a file from a peer to this machine
+    upload <id> <local> <remote-file>   Copy a file from this machine to a peer (overwrites)
+    mkdir <id> <remote-dir>             Create a directory on a peer
+    rm <id> <remote-file>               Remove a file on a peer
+    rmdir <id> <remote-dir>             Remove an empty directory on a peer
     tunnel <id> <local-port> <remote-host> <remote-port>
                                         Forward localhost:<local-port> to <remote-host>:<remote-port> as seen from the peer
     screenshot <id> <out.png>           Save a screenshot of the peer's display (last resort: shows patient data)
@@ -98,6 +102,10 @@ async fn run(command: &str) -> ResultType<()> {
         "terminal" => run_terminal().await,
         "ls" => run_ls().await,
         "download" => run_download().await,
+        "upload" => run_upload().await,
+        "mkdir" => run_mkdir().await,
+        "rm" => run_remove(false).await,
+        "rmdir" => run_remove(true).await,
         "tunnel" => run_tunnel().await,
         "screenshot" => run_screenshot().await,
         "mouse" => run_mouse().await,
@@ -343,5 +351,47 @@ async fn run_keyboard(typing: bool) -> ResultType<()> {
     session.logout().await.ok();
     r?;
     println!("{} sent", if typing { "text" } else { "key" });
+    Ok(())
+}
+
+async fn run_upload() -> ResultType<()> {
+    let a = peer_args("fpremote-agent upload <id> <local> <remote-file> [--password <pw>]")?;
+    let (local, remote) = match a.rest.as_slice() {
+        [l, r, ..] => (l.clone(), r.clone()),
+        _ => bail!("need <local> and <remote-file>"),
+    };
+    let (cfg, session) = connect().await?;
+    let password = resolve_password(&session, &a.id, a.password).await;
+    let n = files::upload(&cfg.key, &session.token, &a.id, &password, Path::new(&local), &remote).await;
+    session.logout().await.ok();
+    println!("uploaded {} bytes to {}", n?, remote);
+    Ok(())
+}
+
+async fn run_mkdir() -> ResultType<()> {
+    let a = peer_args("fpremote-agent mkdir <id> <remote-dir> [--password <pw>]")?;
+    let path = a.rest.first().cloned().ok_or_else(|| anyhow!("missing <remote-dir>"))?;
+    let (cfg, session) = connect().await?;
+    let password = resolve_password(&session, &a.id, a.password).await;
+    let r = files::mkdir(&cfg.key, &session.token, &a.id, &password, &path).await;
+    session.logout().await.ok();
+    r?;
+    println!("created {path}");
+    Ok(())
+}
+
+async fn run_remove(is_dir: bool) -> ResultType<()> {
+    let a = peer_args(if is_dir {
+        "fpremote-agent rmdir <id> <remote-dir> [--password <pw>]"
+    } else {
+        "fpremote-agent rm <id> <remote-file> [--password <pw>]"
+    })?;
+    let path = a.rest.first().cloned().ok_or_else(|| anyhow!("missing <path>"))?;
+    let (cfg, session) = connect().await?;
+    let password = resolve_password(&session, &a.id, a.password).await;
+    let r = files::remove(&cfg.key, &session.token, &a.id, &password, &path, is_dir).await;
+    session.logout().await.ok();
+    r?;
+    println!("removed {path}");
     Ok(())
 }
