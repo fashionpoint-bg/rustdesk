@@ -27,6 +27,9 @@ pub struct AgentInterface {
     outbox: Arc<Mutex<Vec<Message>>>,
     logged_in: Arc<AtomicBool>,
     login_error: Arc<Mutex<Option<String>>>,
+    // The core keeps only username/hostname/platform of PeerInfo; screen tools
+    // need the display geometry, so keep it here.
+    displays: Arc<Mutex<Vec<DisplayInfo>>>,
 }
 
 impl AgentInterface {
@@ -36,6 +39,7 @@ impl AgentInterface {
             outbox: Arc::new(Mutex::new(Vec::new())),
             logged_in: Arc::new(AtomicBool::new(false)),
             login_error: Arc::new(Mutex::new(None)),
+            displays: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -90,6 +94,7 @@ impl Interface for AgentInterface {
     }
 
     fn handle_peer_info(&self, pi: PeerInfo) {
+        *self.displays.lock().unwrap() = pi.displays.clone();
         self.lc.write().unwrap().handle_peer_info(&pi);
         self.logged_in.store(true, Ordering::SeqCst);
     }
@@ -137,7 +142,7 @@ impl Session {
     /// The peer's displays as reported in its login PeerInfo (remote-control
     /// sessions only): origin and size in the peer's virtual desktop.
     pub fn displays(&self) -> Vec<DisplayInfo> {
-        self.interface.lc.read().unwrap().info.displays.clone()
+        self.interface.displays.lock().unwrap().clone()
     }
 
     /// Send one protobuf message to the peer.

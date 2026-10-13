@@ -10,7 +10,7 @@ use std::{
 use hbb_common::{bail, rendezvous_proto::ConnType, sleep, ResultType};
 use base::message_proto::*;
 
-use crate::common::{
+use crate::common::input::{
     MOUSE_BUTTON_LEFT, MOUSE_BUTTON_RIGHT, MOUSE_TYPE_DOWN, MOUSE_TYPE_MOVE, MOUSE_TYPE_UP,
     MOUSE_TYPE_WHEEL,
 };
