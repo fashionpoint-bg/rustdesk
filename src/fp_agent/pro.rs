@@ -8,21 +8,29 @@ use super::config::AgentConfig;
 /// One managed computer as the shared address book sees it.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Peer {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub alias: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub username: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub hostname: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub platform: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub device_group_name: String,
     // The stored device password this account may use to connect. Never logged.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub password: String,
+}
+
+/// The API sends `null` for what a computer has not reported yet: one added to
+/// the book at install has no platform, hostname or username until it first
+/// connects. `#[serde(default)]` covers only a missing field, so such an entry
+/// failed to parse and the computer could not be reached (seen 13.10.2026).
+fn null_as_empty<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    Ok(<Option<String> as serde::Deserialize>::deserialize(d)?.unwrap_or_default())
 }
 
 /// A logged-in session on the Pro API. The access token also authorizes P2P
@@ -205,8 +213,12 @@ impl ProSession {
                 continue;
             };
             for raw in self.post_paged("/api/ab/peers", &[("ab", guid)]).await? {
-                if let Ok(peer) = serde_json::from_value::<Peer>(raw) {
-                    peers.push(peer);
+                let id = raw.get("id").and_then(|v| v.as_str()).unwrap_or("?").to_owned();
+                match serde_json::from_value::<Peer>(raw) {
+                    Ok(peer) => peers.push(peer),
+                    // Not the error text: it can quote a field, and the entry
+                    // carries the computer's password.
+                    Err(_) => log::warn!("address book entry {id} does not parse, skipped"),
                 }
             }
         }
