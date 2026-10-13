@@ -5,7 +5,7 @@
 use std::{collections::HashMap, path::Path};
 
 use hbb_common::{
-    log,
+    bail, log,
     tokio::{
         io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
         sync::mpsc,
@@ -17,7 +17,8 @@ use serde_json::{json, Value};
 use crate::client::Data;
 
 use super::{
-    config::AgentConfig, files, pro::ProSession, session::require_password, terminal, tunnel,
+    config::AgentConfig, files, pro::ProSession, screen, session::require_password, terminal,
+    tunnel,
 };
 
 /// Live tunnels opened via `open_tunnel`, keyed by local port; the sender stops
@@ -67,7 +68,7 @@ pub async fn serve() -> ResultType<()> {
             "tools/call" => {
                 let resp = handle_call(&cfg, &mut session, &mut tunnels, req.get("params")).await;
                 let result = match resp {
-                    Ok(text) => tool_text(&text, false),
+                    Ok(result) => result,
                     Err(e) => tool_text(&format!("error: {e}"), true),
                 };
                 write_msg(&mut stdout, &ok_resp(id, result)).await?;
@@ -94,19 +95,33 @@ async fn handle_call(
     session: &mut ProSession,
     tunnels: &mut Tunnels,
     params: Option<&Value>,
-) -> ResultType<String> {
+) -> ResultType<Value> {
     let params = params.cloned().unwrap_or(json!({}));
     let name = params.get("name").and_then(|n| n.as_str()).unwrap_or_default();
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
-
-    let str_arg = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_owned();
-    let id = str_arg("device_id");
     AgentConfig::append_audit(&json!({
         "ts": hbb_common::get_time(),
         "tool": name,
-        "device_id": id,
+        "device_id": args.get("device_id").and_then(|v| v.as_str()).unwrap_or_default(),
         "args": redact_args(&args),
     }).to_string());
+
+    if name == "screenshot" {
+        return screenshot_tool(cfg, session, &args).await;
+    }
+    Ok(tool_text(&text_tool(cfg, session, tunnels, name, &args).await?, false))
+}
+
+/// Tools whose result is plain text.
+async fn text_tool(
+    cfg: &AgentConfig,
+    session: &mut ProSession,
+    tunnels: &mut Tunnels,
+    name: &str,
+    args: &Value,
+) -> ResultType<String> {
+    let str_arg = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_owned();
+    let id = str_arg("device_id");
 
     match name {
         "list_devices" => {
@@ -218,8 +233,76 @@ async fn handle_call(
                 None => Ok(format!("no tunnel on local port {local_port}")),
             }
         }
+        "mouse" => {
+            require_reason(args)?;
+            if id.is_empty() {
+                bail!("device_id is required");
+            }
+            let action = screen::MouseAction::parse(&str_arg("action"), int_arg(args, "dy"))?;
+            let (x, y, display) = (int_arg(args, "x"), int_arg(args, "y"), int_arg(args, "display"));
+            let password = password_for(session, &id, str_arg("password")).await;
+            screen::mouse(&cfg.key, &session.token, &id, &password, display, action, x, y).await?;
+            Ok(format!("mouse {action:?} at {x},{y} on display {display} of {id}"))
+        }
+        "keyboard" => {
+            require_reason(args)?;
+            if id.is_empty() {
+                bail!("device_id is required");
+            }
+            let (text, key) = (str_arg("text"), str_arg("key"));
+            let action = match (text.is_empty(), key.is_empty()) {
+                (false, true) => screen::KeyboardAction::Type(&text),
+                (true, false) => screen::KeyboardAction::Press(&key),
+                _ => bail!("give exactly one of text or key"),
+            };
+            let password = password_for(session, &id, str_arg("password")).await;
+            screen::keyboard(&cfg.key, &session.token, &id, &password, action).await?;
+            Ok(format!("keyboard input sent to {id}"))
+        }
         other => Ok(format!("unknown tool: {other}")),
     }
+}
+
+fn int_arg(args: &Value, k: &str) -> i32 {
+    args.get(k).and_then(|v| v.as_i64()).unwrap_or(0) as i32
+}
+
+/// Screen tools see and touch whatever is on the clinic screen, patient data
+/// included, so every call must say why the terminal and files are not enough.
+/// The reason is in the arguments and so in the audit log.
+fn require_reason(args: &Value) -> ResultType<()> {
+    let reason = args.get("reason").and_then(|v| v.as_str()).unwrap_or_default().trim();
+    if reason.chars().count() < 10 {
+        bail!("reason is required: say why the terminal or files cannot do this (it is written to the audit log)");
+    }
+    Ok(())
+}
+
+/// One screenshot as an MCP image, plus its size so mouse coordinates line up.
+async fn screenshot_tool(cfg: &AgentConfig, session: &mut ProSession, args: &Value) -> ResultType<Value> {
+    require_reason(args)?;
+    let str_arg = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_owned();
+    let id = str_arg("device_id");
+    if id.is_empty() {
+        bail!("device_id is required");
+    }
+    let display = int_arg(args, "display");
+    let password = password_for(session, &id, str_arg("password")).await;
+    let shot = screen::screenshot(&cfg.key, &session.token, &id, &password, display).await?;
+    let data = hbb_common::sodiumoxide::base64::encode(
+        &shot.png,
+        hbb_common::sodiumoxide::base64::Variant::Original,
+    );
+    Ok(json!({
+        "content": [
+            { "type": "image", "data": data, "mimeType": "image/png" },
+            { "type": "text", "text": format!(
+                "display {display} of {id}: {}x{} pixels; mouse x/y are pixels in this image",
+                shot.width, shot.height
+            ) }
+        ],
+        "isError": false
+    }))
 }
 
 /// Explicit password, else the peer's stored one in a shared address book.
@@ -327,6 +410,53 @@ fn tools() -> Value {
                 "type": "object",
                 "properties": { "local_port": { "type": "integer" } },
                 "required": ["local_port"]
+            }
+        },
+        {
+            "name": "screenshot",
+            "description": "LAST RESORT. Take one screenshot of a peer's display and return it as an image. Clinic screens show patient data and the image goes to the model provider: use run_terminal, list_files and download_file first, and look at the screen only when the task needs it (a program with no command line, an error dialog). Every call is logged with its reason.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "device_id": { "type": "string" },
+                    "reason": { "type": "string", "description": "Why the terminal or files cannot do this (written to the audit log)" },
+                    "display": { "type": "integer", "minimum": 0, "description": "0 = primary display" },
+                    "password": { "type": "string" }
+                },
+                "required": ["device_id", "reason"]
+            }
+        },
+        {
+            "name": "mouse",
+            "description": "LAST RESORT. Move, click, double-click, right-click or scroll on a peer's display. x/y are pixels in that display's screenshot: take a screenshot first to find the target and another one after to check the result. Logged with its reason.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "device_id": { "type": "string" },
+                    "reason": { "type": "string", "description": "Why the terminal or files cannot do this (written to the audit log)" },
+                    "action": { "type": "string", "enum": ["move", "click", "double_click", "right_click", "scroll"] },
+                    "x": { "type": "integer" },
+                    "y": { "type": "integer" },
+                    "dy": { "type": "integer", "description": "Scroll only: wheel notches, positive = up" },
+                    "display": { "type": "integer", "minimum": 0 },
+                    "password": { "type": "string" }
+                },
+                "required": ["device_id", "reason", "action", "x", "y"]
+            }
+        },
+        {
+            "name": "keyboard",
+            "description": "LAST RESORT. Type text, or press one key or combination (enter, esc, tab, f5, ctrl+c, alt+f4, ctrl+alt+del), on a peer. Input goes to the window that has focus there. Give exactly one of text or key. Logged with its reason.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "device_id": { "type": "string" },
+                    "reason": { "type": "string", "description": "Why the terminal or files cannot do this (written to the audit log)" },
+                    "text": { "type": "string", "description": "Text to type as-is" },
+                    "key": { "type": "string", "description": "Key or combination, e.g. enter, ctrl+c" },
+                    "password": { "type": "string" }
+                },
+                "required": ["device_id", "reason"]
             }
         }
     ])
