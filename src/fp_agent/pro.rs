@@ -1,4 +1,4 @@
-use hbb_common::{bail, config::Config, ResultType};
+use hbb_common::{bail, config::Config, log, ResultType};
 use serde_derive::Deserialize;
 use serde_json::{json, Value};
 use totp_rs::{Algorithm, Secret, TOTP};
@@ -43,15 +43,48 @@ fn totp_now(secret: &str) -> ResultType<String> {
     Ok(totp.generate_current()?)
 }
 
+/// The server refused the 2FA step. A separate type so `login` retries only
+/// this: two logins of one account from one machine at the same moment clash
+/// on the server's pending-2FA state and one of them is refused (seen with
+/// parallel CLI calls, 13.10.2026; logins one after another all pass).
+#[derive(Debug)]
+struct TfaRejected(String);
+
+impl std::fmt::Display for TfaRejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "2FA rejected: {}", self.0)
+    }
+}
+
+impl std::error::Error for TfaRejected {}
+
 fn device_info(name: &str) -> Value {
     json!({ "os": "linux", "type": "client", "name": name })
 }
 
 impl ProSession {
-    /// Log in with the account password and a generated 2FA code. The server
-    /// answers the first request with `email_check` + `tfa_check`; the second
-    /// request carries the TOTP code and the returned secret.
+    /// Log in, retrying a refused 2FA step after a short random pause so that
+    /// agent processes started together on one machine all get in.
     pub async fn login(cfg: &AgentConfig) -> ResultType<Self> {
+        const ATTEMPTS: u32 = 4;
+        let mut attempt = 1;
+        loop {
+            match Self::login_once(cfg).await {
+                Err(e) if attempt < ATTEMPTS && e.downcast_ref::<TfaRejected>().is_some() => {
+                    let ms = 300 + hbb_common::rand::random::<u64>() % 1200;
+                    log::info!("{e} (attempt {attempt}/{ATTEMPTS}); retrying in {ms} ms");
+                    hbb_common::sleep(ms as f32 / 1000.).await;
+                    attempt += 1;
+                }
+                result => return result,
+            }
+        }
+    }
+
+    /// One login with the account password and a generated 2FA code. The
+    /// server answers the first request with `email_check` + `tfa_check`; the
+    /// second request carries the TOTP code and the returned secret.
+    async fn login_once(cfg: &AgentConfig) -> ResultType<Self> {
         let password = cfg.read_secret("password")?;
         let totp_secret = cfg.read_secret("totp")?;
         let device_id = Config::get_id();
@@ -106,7 +139,7 @@ impl ProSession {
                 .json()
                 .await?;
             if let Some(err) = step2.get("error").and_then(|v| v.as_str()) {
-                bail!("2FA rejected: {}", err);
+                return Err(TfaRejected(err.to_owned()).into());
             }
             token = step2
                 .get("access_token")

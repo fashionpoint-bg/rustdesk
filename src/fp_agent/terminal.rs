@@ -166,9 +166,9 @@ pub async fn run_command(
 
     let mut raw = String::new();
     let deadline = Instant::now() + Duration::from_secs(60);
-    while Instant::now() < deadline {
-        let Some(msg) = session.next_message().await? else {
-            continue; // idle read gap; keep waiting for the marker until deadline
+    loop {
+        let Some(msg) = session.next_message_until(deadline).await? else {
+            break; // deadline reached without the exit marker
         };
         let Some(message::Union::TerminalResponse(resp)) = msg.union else {
             continue;

@@ -66,11 +66,8 @@ pub async fn screenshot(
 
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        if Instant::now() >= deadline {
+        let Some(msg) = session.next_message_until(deadline).await? else {
             bail!("no screenshot from {id} within 30s");
-        }
-        let Some(msg) = session.next_message().await? else {
-            continue;
         };
         if let Some(message::Union::ScreenshotResponse(r)) = msg.union {
             if !r.msg.is_empty() {

@@ -1,6 +1,9 @@
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc, Mutex, RwLock,
+use std::{
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, RwLock,
+    },
+    time::{Duration, Instant},
 };
 
 use hbb_common::{
@@ -159,11 +162,25 @@ impl Session {
     }
 
     /// Read the next message from the peer, handling the transport-level
-    /// `TestDelay` keepalive transparently. Returns `None` on read timeout.
+    /// `TestDelay` keepalive transparently. Returns `None` when no other
+    /// message arrives within READ_TIMEOUT in total.
     pub async fn next_message(&mut self) -> ResultType<Option<Message>> {
+        self.next_message_until(Instant::now() + Duration::from_millis(READ_TIMEOUT))
+            .await
+    }
+
+    /// Like `next_message`, but returns `None` at `deadline`. The bound is on
+    /// the total wait: an idle peer keeps sending keepalives, so a per-read
+    /// timeout never fires and the caller would never get control back (seen
+    /// 13.10.2026: a file removal the peer never answered hung the agent).
+    pub async fn next_message_until(&mut self, deadline: Instant) -> ResultType<Option<Message>> {
         loop {
             self.flush_outbox().await?;
-            match timeout(READ_TIMEOUT, self.stream.next()).await {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Ok(None);
+            }
+            match timeout(left.as_millis() as u64, self.stream.next()).await {
                 Err(_) => return Ok(None),
                 Ok(Some(Ok(bytes))) => {
                     let msg = Message::parse_from_bytes(&bytes)?;
@@ -179,6 +196,10 @@ impl Session {
         }
     }
 }
+
+/// The longest a peer may take to answer the login. A configured clinic
+/// computer answers in about a second.
+const LOGIN_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Connect to `id` on our server and log in with `password` for `conn_type`,
 /// returning the session positioned right after `PeerInfo`.
@@ -212,12 +233,25 @@ pub async fn connect_and_login(
     interface.update_direct(Some(direct));
     let _keep_hc = hc_connection(feedback, rendezvous_server, token).await;
 
+    // Bound the whole login, not each read: a peer waiting for someone to
+    // click Accept keeps the connection alive with keepalives indefinitely.
+    let deadline = Instant::now() + LOGIN_TIMEOUT;
     loop {
         for m in interface.take_outbox() {
             stream.send(&m).await?;
         }
-        match timeout(READ_TIMEOUT, stream.next()).await {
-            Err(_) => bail!("timeout while logging in to {id}"),
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            bail!(
+                "no login answer from {id} within {}s (does the computer ask someone to accept the connection?)",
+                LOGIN_TIMEOUT.as_secs()
+            );
+        }
+        match timeout(left.as_millis() as u64, stream.next()).await {
+            Err(_) => bail!(
+                "no login answer from {id} within {}s (does the computer ask someone to accept the connection?)",
+                LOGIN_TIMEOUT.as_secs()
+            ),
             Ok(Some(Ok(bytes))) => {
                 let msg_in = Message::parse_from_bytes(&bytes)?;
                 match msg_in.union {

@@ -46,11 +46,8 @@ pub async fn list(
     // wait so a peer without one fails cleanly instead of hanging the agent.
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        if Instant::now() >= deadline {
+        let Some(msg) = session.next_message_until(deadline).await? else {
             bail!("no listing of {path} from {id} within 30s (is a user logged in on the peer?)");
-        }
-        let Some(msg) = session.next_message().await? else {
-            continue;
         };
         if let Some(message::Union::FileResponse(fr)) = msg.union {
             match fr.union {
@@ -163,11 +160,8 @@ pub async fn download(
 async fn await_result(session: &mut Session, id: &str, what: &str, job_id: i32) -> ResultType<()> {
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
-        if Instant::now() >= deadline {
+        let Some(msg) = session.next_message_until(deadline).await? else {
             bail!("no answer to {what} from {id} within 60s (is a user logged in on the peer?)");
-        }
-        let Some(msg) = session.next_message().await? else {
-            continue;
         };
         if let Some(message::Union::FileResponse(fr)) = msg.union {
             match fr.union {
