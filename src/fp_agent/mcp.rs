@@ -16,7 +16,9 @@ use serde_json::{json, Value};
 
 use crate::client::Data;
 
-use super::{config::AgentConfig, files, pro::ProSession, terminal, tunnel};
+use super::{
+    config::AgentConfig, files, pro::ProSession, session::require_password, terminal, tunnel,
+};
 
 /// Live tunnels opened via `open_tunnel`, keyed by local port; the sender stops
 /// the tunnel when `Data::Close` is sent on it.
@@ -181,6 +183,9 @@ async fn handle_call(
                 return Ok(format!("a tunnel already uses local port {local_port}"));
             }
             let password = password_for(session, &id, str_arg("password")).await;
+            // Check before spawning: the tool must not report an open tunnel that
+            // cannot log in.
+            require_password(&id, &password)?;
             let (tx, rx) = mpsc::unbounded_channel::<Data>();
             let (key, token, id2, host) =
                 (cfg.key.clone(), session.token.clone(), id.clone(), remote_host.clone());

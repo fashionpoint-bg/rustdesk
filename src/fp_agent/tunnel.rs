@@ -10,7 +10,7 @@ use hbb_common::{
 
 use crate::client::{Data, LoginConfigHandler};
 
-use super::session::AgentInterface;
+use super::session::{require_password, AgentInterface};
 
 /// Open a local TCP listener on `local_port` that forwards every connection to
 /// `remote_host:remote_port` as seen from the peer, over the P2P tunnel. Runs
@@ -47,6 +47,7 @@ pub async fn run_with_receiver(
     remote_port: i32,
     receiver: mpsc::UnboundedReceiver<Data>,
 ) -> ResultType<()> {
+    require_password(id, password)?;
     if !token.is_empty() {
         LocalConfig::set_option("access_token".to_owned(), token.to_owned());
     }

@@ -42,6 +42,22 @@ impl AgentInterface {
     fn take_outbox(&self) -> Vec<Message> {
         std::mem::take(&mut *self.outbox.lock().unwrap())
     }
+
+    fn take_login_error(&self) -> Option<String> {
+        self.login_error.lock().unwrap().take()
+    }
+}
+
+/// The agent logs in unattended only: without a password the client core asks
+/// the UI for one (or the peer waits for someone to click Accept), and nobody
+/// answers. Refuse up front instead of hanging.
+pub(crate) fn require_password(id: &str, password: &str) -> ResultType<()> {
+    if password.is_empty() {
+        bail!(
+            "no password for {id}: it is not in a shared address book this account can read, and none was given"
+        );
+    }
+    Ok(())
 }
 
 #[async_trait::async_trait]
@@ -162,6 +178,7 @@ pub async fn connect_and_login(
     password: &str,
     conn_type: ConnType,
 ) -> ResultType<Session> {
+    require_password(id, password)?;
     // Some client-core reads still look at LocalConfig for the account token.
     if !token.is_empty() {
         LocalConfig::set_option("access_token".to_owned(), token.to_owned());
@@ -195,6 +212,11 @@ pub async fn connect_and_login(
                 match msg_in.union {
                     Some(message::Union::Hash(hash)) => {
                         interface.handle_hash("", hash, &mut stream).await;
+                        // The core reports "Password Required" through msgbox when it
+                        // would wait for UI input; nothing will answer it here.
+                        if let Some(err) = interface.take_login_error() {
+                            bail!("login to {id} failed: {err}");
+                        }
                     }
                     Some(message::Union::LoginResponse(lr)) => match lr.union {
                         Some(login_response::Union::Error(err)) => {
