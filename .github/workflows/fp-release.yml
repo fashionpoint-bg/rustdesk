@@ -9,9 +9,10 @@ name: FashionPoint build
 #   fp-staff-v<upstream version>-<n> the staff edition: build, sign and upload to the release of the tag.
 # - Manual run: build the chosen edition only (nothing is uploaded) unless "publish" is ticked (then
 #   unsigned, to the release fp-test-<edition>).
-# After an upload the release becomes a draft, its files are named FPRemote-Clinic-* / FPRemote-Staff-*,
-# the clinic release gets the install scripts from res/fashionpoint/clinic/, and the run's artifacts are
-# deleted (a public repo's artifacts can be downloaded by any GitHub user).
+# The release is a draft from the first upload (flutter-build.yml passes draft to every upload when
+# fashionpoint is set). At the end its files are named FPRemote-Clinic-* / FPRemote-Staff-*, the clinic
+# release gets the install scripts from res/fashionpoint/clinic/, and the run's artifacts are deleted
+# (a public repo's artifacts can be downloaded by any GitHub user).
 # Signing inputs. Windows: vars AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT,
 # AZURE_CERT_PROFILE + secret AZURE_CLIENT_SECRET. macOS: secrets MACOS_P12_BASE64, MACOS_P12_PASSWORD,
 # MACOS_CODESIGN_IDENTITY (the certificate's SHA-1 fingerprint, so it needs no shell quoting), APPLE_ID,
