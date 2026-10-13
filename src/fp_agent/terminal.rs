@@ -30,21 +30,30 @@ fn is_windows(platform: &str) -> bool {
 /// input echo and blank the prompt, so only real command output remains
 /// between the markers. Must be processed before the framed command is sent,
 /// because the tty line discipline echoes earlier input at the kernel layer.
+/// Pagers go to `cat`: on a terminal `git log`, `systemctl` and `man` open
+/// `less`, which waits for a key until the call times out.
 fn quiet_shell(platform: &str) -> String {
     if is_windows(platform) {
         "function prompt { '' }\r\n".to_owned()
     } else {
-        "stty -echo 2>/dev/null; export PS1='' PS2='' PROMPT_COMMAND=''\n".to_owned()
+        "stty -echo 2>/dev/null; export PS1='' PS2='' PROMPT_COMMAND='' PAGER=cat GIT_PAGER=cat SYSTEMD_PAGER=cat MANPAGER=cat\n".to_owned()
     }
 }
 
 /// The framed command: START marker, the command, then the EXIT marker with the
 /// exit status. Markers are quote-split so an echoed copy can never match the
 /// joined form we scan for.
+///
+/// PowerShell: a terminating error (`throw`, `-ErrorAction Stop`) drops the
+/// rest of the typed line, EXIT marker included, so the command runs in
+/// try/catch and a caught error is printed and counts as a failure.
+/// `$LASTEXITCODE` is set only by native programs and stays empty after
+/// cmdlets, so the status comes from `$?` first: success is 0, a failed native
+/// program keeps its own code, any other failure is 1.
 fn marker_command(command: &str, platform: &str) -> String {
     if is_windows(platform) {
         format!(
-            "Write-Output (\"__FP\"+\"START__\"); {command}; Write-Output (\"__FP\"+\"EXIT__\"+$LASTEXITCODE+\"__FP\"+\"END__\")\r\n"
+            "Write-Output (\"__FP\"+\"START__\"); $__fpt=$false; try {{ {command} }} catch {{ $__fpt=$true; Write-Output ($_ | Out-String) }}; $__fpok=$? -and -not $__fpt; $__fpec=$LASTEXITCODE; Write-Output (\"__FP\"+\"EXIT__\"+$(if($__fpok){{0}}elseif($null -ne $__fpec -and $__fpec -ne 0){{$__fpec}}else{{1}})+\"__FP\"+\"END__\")\r\n"
         )
     } else {
         format!(
@@ -97,6 +106,49 @@ fn decode(data: &[u8], compressed: bool) -> Vec<u8> {
     }
 }
 
+/// Drop terminal escape sequences, so the agent gets plain text: colours
+/// (`ESC[01;31m`), the bracketed-paste toggles bash prints around each prompt
+/// (`ESC[?2004h`, `ESC[?2004l`), cursor movement and window titles.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\x1b' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            // CSI: parameter and intermediate bytes up to one final byte @..~
+            Some('[') => {
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            // OSC: up to BEL or ST (ESC \)
+            Some(']') => {
+                while let Some(c) = chars.next() {
+                    if c == '\x07' {
+                        break;
+                    }
+                    if c == '\x1b' && chars.peek() == Some(&'\\') {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            // ESC, intermediate byte, final byte (`ESC ( B`)
+            Some(c) if (' '..='/').contains(&c) => {
+                chars.next();
+            }
+            // Any other escape is ESC plus one character.
+            _ => {}
+        }
+    }
+    out
+}
+
 /// Extract the command output delimited by the joined START and EXIT markers,
 /// so the echoed command and shell prompts (outside the markers) are excluded.
 fn clean_output(raw: &str) -> String {
@@ -110,7 +162,10 @@ fn clean_output(raw: &str) -> String {
         _ => raw,
     };
     // PTYs emit CRLF; normalize to LF for clean agent-facing text.
-    body.replace("\r\n", "\n").trim_matches(['\r', '\n']).to_owned()
+    strip_ansi(body)
+        .replace("\r\n", "\n")
+        .trim_matches(['\r', '\n'])
+        .to_owned()
 }
 
 fn parse_exit(raw: &str) -> Option<i32> {
@@ -194,9 +249,17 @@ pub async fn run_command(
     let _ = session.send(close_terminal(terminal_id)).await;
 
     let Some(exit_code) = parse_exit(&raw) else {
+        // Show what the shell printed last, so the caller can see why: a prompt
+        // waiting for input, a pager, a parse error, or output still coming.
+        let seen = strip_ansi(&raw).replace("\r\n", "\n");
+        let tail = seen
+            .char_indices()
+            .rev()
+            .nth(599)
+            .map_or(seen.as_str(), |(i, _)| &seen[i..]);
         bail!(
-            "command did not complete within timeout; captured {} bytes",
-            raw.len()
+            "command did not finish within 60s (waiting for input, or still running); last output:\n{}",
+            tail.trim()
         );
     };
     Ok(TerminalRun {
