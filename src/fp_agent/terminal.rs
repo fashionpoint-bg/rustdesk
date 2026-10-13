@@ -50,6 +50,14 @@ fn quiet_shell(platform: &str) -> String {
 /// `$LASTEXITCODE` is set only by native programs and stays empty after
 /// cmdlets, so the status comes from `$?` first: success is 0, a failed native
 /// program keeps its own code, any other failure is 1.
+///
+/// POSIX shells: the command runs in a subshell with stdin from /dev/null.
+/// `exit` then ends only the subshell, so its status still reaches the EXIT
+/// marker, and a command that reads input gets end of file instead of waiting
+/// for a key or reading the EXIT line typed after it. The no-op `:` first
+/// keeps an empty or comment-only command from leaving an empty `( )`, a
+/// syntax error. `exit` in PowerShell ends the shell itself; the call then
+/// fails at once, with the output so far.
 fn marker_command(command: &str, platform: &str) -> String {
     if is_windows(platform) {
         format!(
@@ -57,7 +65,7 @@ fn marker_command(command: &str, platform: &str) -> String {
         )
     } else {
         format!(
-            "echo \"__FP\"\"START__\"; {command}\necho \"__FP\"\"EXIT__$?__FP\"\"END__\"\n"
+            "echo \"__FP\"\"START__\"; (\n:\n{command}\n) </dev/null\necho \"__FP\"\"EXIT__$?__FP\"\"END__\"\n"
         )
     }
 }
@@ -149,6 +157,20 @@ fn strip_ansi(s: &str) -> String {
     out
 }
 
+/// Keep what a terminal shows of each line: a carriage return goes back to the
+/// start of the line and the text after it overwrites, which is how progress
+/// meters (apt, curl, dd) redraw themselves. A carriage return at the end of a
+/// line is only a line ending and is dropped.
+fn collapse_cr(s: &str) -> String {
+    s.split('\n')
+        .map(|line| {
+            let line = line.trim_end_matches('\r');
+            line.rsplit('\r').next().unwrap_or(line)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Extract the command output delimited by the joined START and EXIT markers,
 /// so the echoed command and shell prompts (outside the markers) are excluded.
 fn clean_output(raw: &str) -> String {
@@ -159,11 +181,15 @@ fn clean_output(raw: &str) -> String {
         }
         // START marker missing: fall back to everything before EXIT.
         (_, Some(e)) => &raw[..e],
+        // EXIT marker missing (timeout, or the shell ended): all after START.
+        (Some(s), None) => {
+            let after_start = raw[s..].find('\n').map_or(raw.len(), |n| s + n + 1);
+            &raw[after_start..]
+        }
         _ => raw,
     };
     // PTYs emit CRLF; normalize to LF for clean agent-facing text.
-    strip_ansi(body)
-        .replace("\r\n", "\n")
+    collapse_cr(&strip_ansi(body).replace("\r\n", "\n"))
         .trim_matches(['\r', '\n'])
         .to_owned()
 }
@@ -220,6 +246,7 @@ pub async fn run_command(
         .await?;
 
     let mut raw = String::new();
+    let mut shell_closed = false;
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let Some(msg) = session.next_message_until(deadline).await? else {
@@ -236,7 +263,11 @@ pub async fn run_command(
                 }
             }
             Some(terminal_response::Union::Closed(c)) => {
+                // The shell itself ended before the EXIT marker. Its exit code
+                // here is not reliably the command's: the peer reports 0 when it
+                // reads the status before the process has exited.
                 log::debug!("terminal {} closed, exit {}", c.terminal_id, c.exit_code);
+                shell_closed = true;
                 break;
             }
             Some(terminal_response::Union::Error(e)) => {
@@ -249,17 +280,21 @@ pub async fn run_command(
     let _ = session.send(close_terminal(terminal_id)).await;
 
     let Some(exit_code) = parse_exit(&raw) else {
-        // Show what the shell printed last, so the caller can see why: a prompt
-        // waiting for input, a pager, a parse error, or output still coming.
-        let seen = strip_ansi(&raw).replace("\r\n", "\n");
+        // Show what the command printed last, so the caller can see why: a
+        // prompt waiting for input, a pager, a parse error, or output still coming.
+        let seen = clean_output(&raw);
         let tail = seen
             .char_indices()
             .rev()
             .nth(599)
             .map_or(seen.as_str(), |(i, _)| &seen[i..]);
+        if shell_closed {
+            bail!(
+                "the shell on {id} exited before the command finished (did the command run `exit`?), so its exit code is unknown; last output:\n{tail}"
+            );
+        }
         bail!(
-            "command did not finish within 60s (waiting for input, or still running); last output:\n{}",
-            tail.trim()
+            "command did not finish within 60s (waiting for input, or still running); last output:\n{tail}"
         );
     };
     Ok(TerminalRun {
