@@ -1,0 +1,121 @@
+name: fpremote-agent
+
+# FashionPoint fork: builds the FPRemote headless agent (src/fp_agent, the
+# `fp-agent` feature, binary `fpremote-agent`) for Linux x86_64 on pushes to the
+# fp-agent branch. No signing and no release: the binary is a workflow
+# artifact. Design and status: the fp-remote repo, docs/agent.md.
+# The steps mirror the dev server that verified the agent live (Ubuntu 24.04,
+# Rust 1.75, vcpkg at the commit the other jobs pin, classic-mode install).
+
+on:
+  push:
+    branches:
+      - fp-agent
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RUST_VERSION: "1.75"
+  VCPKG_COMMIT_ID: "9e593bb18ea69cc5095e012465dcd675a822ed0d"
+
+jobs:
+  build-linux:
+    name: fpremote-agent linux x86_64
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+               clang \
+               cmake \
+               curl \
+               g++ \
+               git \
+               libasound2-dev \
+               libayatana-appindicator3-dev \
+               libc6-dev \
+               libclang-dev \
+               libgstreamer1.0-dev \
+               libgstreamer-plugins-base1.0-dev \
+               libgtk-3-dev \
+               libpam0g-dev \
+               libpulse-dev \
+               libunwind-dev \
+               libva-dev \
+               libxcb-randr0-dev \
+               libxcb-shape0-dev \
+               libxcb-xfixes0-dev \
+               libxdo-dev \
+               libxfixes-dev \
+               llvm-dev \
+               nasm \
+               ninja-build \
+               pkg-config \
+               wget
+
+      - name: Checkout source code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Setup vcpkg with GitHub Actions binary cache
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
+        with:
+          vcpkgDirectory: /opt/artifacts/vcpkg
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Install vcpkg dependencies
+        shell: bash
+        run: |
+          # Classic mode from the vcpkg directory: the repo root holds a
+          # manifest, which refuses package arguments.
+          cd "$VCPKG_ROOT"
+          if ! ./vcpkg install --triplet x64-linux \
+              --overlay-ports="$GITHUB_WORKSPACE/res/vcpkg" \
+              --overlay-triplets="$GITHUB_WORKSPACE/res/vcpkg-triplets" \
+              libvpx libyuv opus aom libjpeg-turbo; then
+            find "$VCPKG_ROOT/" -name "*.log" | while read -r log; do
+              echo "== $log"; cat "$log"
+            done
+            exit 1
+          fi
+
+      - name: Build fpremote-agent
+        run: cargo build --release --locked --features fp-agent --bin fpremote-agent
+
+      - name: Smoke test
+        run: ./target/release/fpremote-agent help
+
+      - name: Upload fpremote-agent
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fpremote-agent-linux-x86_64
+          path: target/release/fpremote-agent
+          if-no-files-found: error
