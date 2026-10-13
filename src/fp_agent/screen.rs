@@ -34,6 +34,18 @@ fn png_size(png: &[u8]) -> Option<(u32, u32)> {
     Some((w, h))
 }
 
+/// Peers on 24-bit X displays (Xvfb, verified 13.10.2026) and capture paths that
+/// leave the padding byte of each pixel at 0 encode RGBA as-is, so the PNG is
+/// fully transparent and every viewer, the model included, sees a blank image.
+/// A screen is opaque: decode, drop the alpha channel and re-encode as RGB
+/// (also a smaller image for the model).
+fn opaque_png(png: &[u8]) -> ResultType<Vec<u8>> {
+    let rgb = image::load_from_memory_with_format(png, image::ImageFormat::Png)?.to_rgb8();
+    let mut out = std::io::Cursor::new(Vec::new());
+    rgb.write_to(&mut out, image::ImageOutputFormat::Png)?;
+    Ok(out.into_inner())
+}
+
 /// Take one screenshot of `display` (0 = primary). The peer captures the frame
 /// and encodes it as PNG itself; the video frames that stream meanwhile are
 /// dropped unread.
@@ -64,10 +76,10 @@ pub async fn screenshot(
             if !r.msg.is_empty() {
                 bail!("screenshot on {id}: {}", r.msg);
             }
-            let png = r.data.to_vec();
-            let Some((width, height)) = png_size(&png) else {
+            let Some((width, height)) = png_size(&r.data) else {
                 bail!("screenshot on {id}: the peer did not send a PNG");
             };
+            let png = opaque_png(&r.data)?;
             return Ok(Shot { png, width, height });
         }
     }
