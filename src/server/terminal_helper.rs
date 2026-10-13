@@ -884,7 +884,9 @@ pub fn run_terminal_helper(args: &[String]) -> Result<()> {
         .context("Failed to get PTY reader")?;
 
     // Wrap pty_pair.master in Arc<Mutex> for sharing with input thread (for resize).
-    let pty_master: Arc<Mutex<Box<dyn MasterPty + Send>>> = Arc::new(Mutex::new(pty_pair.master));
+    // `Option` so the main thread can close the pseudoconsole once the shell exits.
+    let pty_master: Arc<Mutex<Option<Box<dyn MasterPty + Send>>>> =
+        Arc::new(Mutex::new(Some(pty_pair.master)));
 
     let exiting = Arc::new(AtomicBool::new(false));
 
@@ -967,12 +969,14 @@ pub fn run_terminal_helper(args: &[String]) -> Result<()> {
                         let cols = u16::from_le_bytes([payload_buf[2], payload_buf[3]]);
                         log::debug!("Resize: {}x{}", cols, rows);
                         if let Ok(master) = pty_master_clone.lock() {
-                            let _ = master.resize(PtySize {
-                                rows,
-                                cols,
-                                pixel_width: 0,
-                                pixel_height: 0,
-                            });
+                            if let Some(master) = master.as_ref() {
+                                let _ = master.resize(PtySize {
+                                    rows,
+                                    cols,
+                                    pixel_width: 0,
+                                    pixel_height: 0,
+                                });
+                            }
                         }
                     }
                 }
@@ -1028,12 +1032,19 @@ pub fn run_terminal_helper(args: &[String]) -> Result<()> {
 
     exiting.store(true, Ordering::SeqCst);
 
-    // Wait for threads
-    let _ = input_thread.join();
+    // ConPTY ends its output only when the pseudoconsole is closed, so the output thread
+    // would wait forever on a shell that has already exited (e.g. `exit` in PowerShell).
+    let master = pty_master
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
+    drop(master);
     let _ = output_thread.join();
 
-    // pty_master will be dropped here, releasing PTY resources
-    drop(pty_master);
+    // The input thread blocks on the service's pipe, which stays open until this process
+    // exits; joining it would keep the helper, and with it the session, alive. Process exit
+    // closes the pipes, and the service then reports the terminal closed.
+    drop(input_thread);
 
     log::info!("Terminal helper exiting");
     Ok(())
