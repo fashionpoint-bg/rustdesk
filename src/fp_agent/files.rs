@@ -11,9 +11,9 @@ use base::{
 
 use super::session::{connect_and_login, Session};
 
-/// Id of the one transfer job a call runs. Not 0: unasked-for messages carry
-/// id 0, such as the listing below.
-const JOB_ID: i32 = 1;
+// Every transfer job takes its id from `Session::next_id`: never 0, which
+// unasked-for messages carry (such as the listing below), and never one an
+// earlier call on a reused connection had.
 
 /// Whether a listing the peer sent is for `requested`. Right after a file
 /// transfer login the peer sends, unasked, a listing of the folder the login
@@ -58,6 +58,16 @@ pub async fn list(
     include_hidden: bool,
 ) -> ResultType<Vec<Entry>> {
     let mut session = connect_and_login(key, token, id, password, ConnType::FILE_TRANSFER).await?;
+    list_on(&mut session, id, path, include_hidden).await
+}
+
+/// List a directory on an open file-transfer connection to `id`.
+pub async fn list_on(
+    session: &mut Session,
+    id: &str,
+    path: &str,
+    include_hidden: bool,
+) -> ResultType<Vec<Entry>> {
     session.send(read_dir_msg(path, include_hidden)).await?;
     // The peer answers listings from its connection manager process; bound the
     // wait so a peer without one fails cleanly instead of hanging the agent.
@@ -103,6 +113,17 @@ pub async fn download(
     remote_path: &str,
     local_path: &Path,
 ) -> ResultType<u64> {
+    let mut session = connect_and_login(key, token, id, password, ConnType::FILE_TRANSFER).await?;
+    download_on(&mut session, id, remote_path, local_path).await
+}
+
+/// Download one file on an open file-transfer connection to `id`.
+pub async fn download_on(
+    session: &mut Session,
+    id: &str,
+    remote_path: &str,
+    local_path: &Path,
+) -> ResultType<u64> {
     if local_path.is_dir() {
         bail!("{} is a directory; give the destination file path", local_path.display());
     }
@@ -110,8 +131,7 @@ pub async fn download(
         std::fs::create_dir_all(parent)?;
     }
 
-    let mut session = connect_and_login(key, token, id, password, ConnType::FILE_TRANSFER).await?;
-    let job_id = JOB_ID;
+    let job_id = session.next_id();
     let mut job = TransferJob::new_write(
         job_id,
         JobType::Generic,
@@ -152,10 +172,10 @@ pub async fn download(
                 job.confirm(&req).await;
                 session.send(fs::new_send_confirm(req)).await?;
             }
-            Some(file_response::Union::Block(block)) => {
+            Some(file_response::Union::Block(block)) if block.id == job_id => {
                 job.write(block).await?;
             }
-            Some(file_response::Union::Done(_)) => {
+            Some(file_response::Union::Done(d)) if d.id == job_id => {
                 job.modify_time();
                 break;
             }
@@ -211,11 +231,22 @@ pub async fn upload(
     local_path: &Path,
     remote_path: &str,
 ) -> ResultType<u64> {
+    let mut session = connect_and_login(key, token, id, password, ConnType::FILE_TRANSFER).await?;
+    upload_on(&mut session, id, local_path, remote_path).await
+}
+
+/// Upload one file on an open file-transfer connection to `id`.
+pub async fn upload_on(
+    session: &mut Session,
+    id: &str,
+    local_path: &Path,
+    remote_path: &str,
+) -> ResultType<u64> {
     if !local_path.is_file() {
         bail!("{} is not a file", local_path.display());
     }
     let size = std::fs::metadata(local_path)?.len();
-    let job_id = JOB_ID;
+    let job_id = session.next_id();
     let job = TransferJob::new_read(
         job_id,
         JobType::Generic,
@@ -229,7 +260,6 @@ pub async fn upload(
     let files = job.files().clone();
     let total_size = job.total_size();
 
-    let mut session = connect_and_login(key, token, id, password, ConnType::FILE_TRANSFER).await?;
     session
         .send(fs::new_receive(job_id, remote_path.to_owned(), 0, files, total_size))
         .await?;
@@ -238,14 +268,19 @@ pub async fn upload(
     while !jobs.is_empty() {
         fs::handle_read_jobs(&mut jobs, &mut session.stream).await?;
     }
-    await_result(&mut session, id, &format!("upload to {remote_path}"), job_id).await?;
+    await_result(session, id, &format!("upload to {remote_path}"), job_id).await?;
     Ok(size)
 }
 
 /// Create a directory on the peer.
 pub async fn mkdir(key: &str, token: &str, id: &str, password: &str, path: &str) -> ResultType<()> {
     let mut session = connect_and_login(key, token, id, password, ConnType::FILE_TRANSFER).await?;
-    let job_id = JOB_ID;
+    mkdir_on(&mut session, id, path).await
+}
+
+/// Create a directory on an open file-transfer connection to `id`.
+pub async fn mkdir_on(session: &mut Session, id: &str, path: &str) -> ResultType<()> {
+    let job_id = session.next_id();
     let mut action = FileAction::new();
     action.set_create(FileDirCreate {
         id: job_id,
@@ -253,7 +288,7 @@ pub async fn mkdir(key: &str, token: &str, id: &str, password: &str, path: &str)
         ..Default::default()
     });
     session.send(file_action_msg(action)).await?;
-    await_result(&mut session, id, &format!("mkdir {path}"), job_id).await
+    await_result(session, id, &format!("mkdir {path}"), job_id).await
 }
 
 /// Remove a file, or an empty directory, on the peer. A directory goes with
@@ -272,7 +307,12 @@ pub async fn remove(
     is_dir: bool,
 ) -> ResultType<()> {
     let mut session = connect_and_login(key, token, id, password, ConnType::FILE_TRANSFER).await?;
-    let job_id = JOB_ID;
+    remove_on(&mut session, id, path, is_dir).await
+}
+
+/// Remove a file or an empty directory on an open file-transfer connection to `id`.
+pub async fn remove_on(session: &mut Session, id: &str, path: &str, is_dir: bool) -> ResultType<()> {
+    let job_id = session.next_id();
     let mut action = FileAction::new();
     if is_dir {
         action.set_remove_dir(FileRemoveDir {
@@ -290,5 +330,5 @@ pub async fn remove(
         });
     }
     session.send(file_action_msg(action)).await?;
-    await_result(&mut session, id, &format!("remove {path}"), job_id).await
+    await_result(session, id, &format!("remove {path}"), job_id).await
 }

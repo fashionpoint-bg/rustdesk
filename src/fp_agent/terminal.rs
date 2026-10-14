@@ -6,7 +6,7 @@ use std::{
 use hbb_common::{bail, compress, log, rendezvous_proto::ConnType, ResultType};
 use base::message_proto::*;
 
-use super::session::connect_and_login;
+use super::session::{connect_and_login, Session};
 
 /// What a command run in the remote terminal produced.
 pub struct TerminalRun {
@@ -128,10 +128,10 @@ fn terminal_data(terminal_id: i32, text: &str) -> Message {
     msg
 }
 
-fn open_terminal(rows: u32, cols: u32) -> Message {
+fn open_terminal(terminal_id: i32, rows: u32, cols: u32) -> Message {
     let mut action = TerminalAction::new();
     action.set_open(OpenTerminal {
-        terminal_id: 0,
+        terminal_id,
         rows,
         cols,
         ..Default::default()
@@ -255,8 +255,8 @@ fn parse_exit(raw: &str) -> Option<i32> {
     rest[..end].trim().parse::<i32>().ok()
 }
 
-/// Open a terminal on `id`, run one command, and return its output and exit
-/// code. The remote shell session is closed before returning.
+/// Connect to `id`, run one command in a new terminal, and return its output
+/// and exit code. The remote shell session is closed before returning.
 pub async fn run_command(
     key: &str,
     token: &str,
@@ -265,30 +265,41 @@ pub async fn run_command(
     command: &str,
 ) -> ResultType<TerminalRun> {
     let mut session = connect_and_login(key, token, id, password, ConnType::TERMINAL).await?;
+    run_on(&mut session, id, command).await
+}
+
+/// Run one command in a new terminal on an open terminal connection to `id`,
+/// and close that terminal. Every call gets its own terminal id: the peer
+/// reattaches to a terminal it still has under a requested id and replays its
+/// output, which on a reused connection would be an earlier command's.
+pub async fn run_on(session: &mut Session, id: &str, command: &str) -> ResultType<TerminalRun> {
     let platform = session.platform();
+    let terminal_id = session.next_id();
 
-    session.send(open_terminal(24, 200)).await?;
+    session.send(open_terminal(terminal_id, 24, 200)).await?;
 
-    // Wait for the shell to open.
-    let terminal_id = loop {
+    // Wait for the shell to open. An error before the terminal exists may carry id 0.
+    loop {
         let Some(msg) = session.next_message().await? else {
             bail!("no response opening terminal on {id}");
         };
         if let Some(message::Union::TerminalResponse(resp)) = msg.union {
             match resp.union {
-                Some(terminal_response::Union::Opened(o)) => {
+                Some(terminal_response::Union::Opened(o)) if o.terminal_id == terminal_id => {
                     if !o.success {
                         bail!("terminal refused on {id}: {}", o.message);
                     }
-                    break o.terminal_id;
+                    break;
                 }
-                Some(terminal_response::Union::Error(e)) => {
+                Some(terminal_response::Union::Error(e))
+                    if e.terminal_id == terminal_id || e.terminal_id == 0 =>
+                {
                     bail!("terminal error on {id}: {}", e.message);
                 }
                 _ => {}
             }
         }
-    };
+    }
 
     // Quiet the shell, then let the tty line discipline apply it before framing.
     session
@@ -310,13 +321,13 @@ pub async fn run_command(
             continue;
         };
         match resp.union {
-            Some(terminal_response::Union::Data(d)) => {
+            Some(terminal_response::Union::Data(d)) if d.terminal_id == terminal_id => {
                 raw.push_str(&String::from_utf8_lossy(&decode(&d.data, d.compressed)));
                 if parse_exit(&raw).is_some() {
                     break;
                 }
             }
-            Some(terminal_response::Union::Closed(c)) => {
+            Some(terminal_response::Union::Closed(c)) if c.terminal_id == terminal_id => {
                 // The shell itself ended before the EXIT marker. Its exit code
                 // here is not reliably the command's: the peer reports 0 when it
                 // reads the status before the process has exited.
@@ -324,7 +335,7 @@ pub async fn run_command(
                 shell_closed = true;
                 break;
             }
-            Some(terminal_response::Union::Error(e)) => {
+            Some(terminal_response::Union::Error(e)) if e.terminal_id == terminal_id => {
                 bail!("terminal error on {id}: {}", e.message);
             }
             _ => {}

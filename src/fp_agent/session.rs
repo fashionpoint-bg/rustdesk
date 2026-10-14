@@ -134,9 +134,34 @@ impl Interface for AgentInterface {
 pub struct Session {
     pub stream: Stream,
     pub interface: AgentInterface,
+    next_id: i32,
 }
 
 impl Session {
+    /// A new id for a terminal or a file job on this connection. Ids start at 1
+    /// (0 is what the peer puts on messages nobody asked for) and never repeat on
+    /// a connection, so when the MCP server reuses one, a late answer to an
+    /// earlier call cannot be taken for the current one.
+    pub fn next_id(&mut self) -> i32 {
+        let id = self.next_id;
+        self.next_id += 1;
+        id
+    }
+
+    /// Read and drop what the peer has sent, answering its keepalives, until it
+    /// is quiet for a moment (2 s at most). Keeps an idle connection open: the
+    /// peer closes one it hears nothing from for 30 s. Fails if the connection
+    /// is gone.
+    pub async fn drain(&mut self) -> ResultType<()> {
+        let until = Instant::now() + Duration::from_secs(2);
+        loop {
+            let quiet = (Instant::now() + Duration::from_millis(100)).min(until);
+            if self.next_message_until(quiet).await?.is_none() || Instant::now() >= until {
+                return Ok(());
+            }
+        }
+    }
+
     /// The peer's platform as reported in its login PeerInfo (e.g. "Linux", "Windows").
     pub fn platform(&self) -> String {
         self.interface.lc.read().unwrap().info.platform.clone()
@@ -270,7 +295,11 @@ pub async fn connect_and_login(
                         }
                         Some(login_response::Union::PeerInfo(pi)) => {
                             interface.handle_peer_info(pi);
-                            return Ok(Session { stream, interface });
+                            return Ok(Session {
+                                stream,
+                                interface,
+                                next_id: 1,
+                            });
                         }
                         _ => {}
                     },

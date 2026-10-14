@@ -2,13 +2,19 @@
 //! stdout carries only MCP messages; logs go to the log file and stderr.
 //! Each peer-affecting tool call is recorded in the audit log.
 
-use std::{collections::HashMap, path::Path};
+use std::{
+    collections::HashMap,
+    path::Path,
+    time::{Duration, Instant},
+};
 
 use hbb_common::{
     bail, log,
+    rendezvous_proto::ConnType,
     tokio::{
         io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
         sync::mpsc,
+        time::{interval, MissedTickBehavior},
     },
     ResultType,
 };
@@ -17,8 +23,12 @@ use serde_json::{json, Value};
 use crate::client::Data;
 
 use super::{
-    config::AgentConfig, files, pro::ProSession, screen, session::require_password, terminal,
-    tunnel,
+    config::AgentConfig,
+    files,
+    pro::ProSession,
+    screen,
+    session::{connect_and_login, require_password, Session},
+    terminal, tunnel,
 };
 
 /// Live tunnels opened via `open_tunnel`, keyed by local port; the sender stops
@@ -27,6 +37,77 @@ type Tunnels = HashMap<i32, mpsc::UnboundedSender<Data>>;
 
 const SERVER_NAME: &str = "fpremote-agent";
 const PROTOCOL_VERSION: &str = "2024-11-05";
+
+/// How long a connection to a computer stays open after the last call on it.
+/// Calls in that time reuse it, so a piece of work shows the computer's FPRemote
+/// panel once instead of once per call.
+const IDLE_CLOSE: Duration = Duration::from_secs(120);
+/// How often idle connections answer the peer's keepalives (the peer closes a
+/// connection it hears nothing from for 30 s) and are checked against IDLE_CLOSE.
+const KEEPALIVE_EVERY: Duration = Duration::from_secs(5);
+
+/// Open terminal and file-transfer connections, by peer id and connection type.
+/// Screen tools still connect per call: while a remote-control connection is
+/// open the peer captures and sends its screen.
+#[derive(Default)]
+struct Pool {
+    conns: HashMap<(String, i32), (Session, Instant)>,
+}
+
+impl Pool {
+    /// The open connection to `id` of this type if it is still alive, else a new one.
+    async fn take(
+        &mut self,
+        cfg: &AgentConfig,
+        token: &str,
+        id: &str,
+        password: &str,
+        conn_type: ConnType,
+    ) -> ResultType<Session> {
+        // Taken out before the password check, so a computer the account can no
+        // longer reach loses its open connection as well.
+        let open = self.conns.remove(&(id.to_owned(), conn_type as i32));
+        require_password(id, password)?;
+        if let Some((mut session, _)) = open {
+            match session.drain().await {
+                Ok(()) => return Ok(session),
+                Err(e) => log::info!("connection to {id} is gone ({e}); reconnecting"),
+            }
+        }
+        connect_and_login(&cfg.key, token, id, password, conn_type).await
+    }
+
+    /// Keep a connection after a call, for the next one.
+    fn put_back(&mut self, id: &str, conn_type: ConnType, session: Session) {
+        self.conns
+            .insert((id.to_owned(), conn_type as i32), (session, Instant::now()));
+    }
+
+    /// Answer the keepalives of idle connections; close the ones unused for
+    /// IDLE_CLOSE and the ones the peer has closed.
+    async fn tick(&mut self) {
+        let keys: Vec<(String, i32)> = self.conns.keys().cloned().collect();
+        for key in keys {
+            let Some((mut session, last_used)) = self.conns.remove(&key) else {
+                continue;
+            };
+            if last_used.elapsed() >= IDLE_CLOSE {
+                log::info!("closing the idle connection to {}", key.0);
+                continue;
+            }
+            if session.drain().await.is_ok() {
+                self.conns.insert(key, (session, last_used));
+            }
+        }
+    }
+
+    /// Close the open connections to `id`, or all of them when `id` is empty.
+    fn close(&mut self, id: &str) -> usize {
+        let before = self.conns.len();
+        self.conns.retain(|(peer, _), _| !id.is_empty() && peer != id);
+        before - self.conns.len()
+    }
+}
 
 /// Run the MCP server loop until stdin closes.
 pub async fn serve() -> ResultType<()> {
@@ -40,8 +121,21 @@ pub async fn serve() -> ResultType<()> {
     let mut reader = BufReader::new(stdin).lines();
     let mut stdout = hbb_common::tokio::io::stdout();
     let mut tunnels: Tunnels = HashMap::new();
+    let mut pool = Pool::default();
+    let mut keepalive = interval(KEEPALIVE_EVERY);
+    keepalive.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
-    while let Some(line) = reader.next_line().await? {
+    loop {
+        let line = hbb_common::tokio::select! {
+            line = reader.next_line() => match line? {
+                Some(line) => line,
+                None => break,
+            },
+            _ = keepalive.tick() => {
+                pool.tick().await;
+                continue;
+            }
+        };
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -66,7 +160,8 @@ pub async fn serve() -> ResultType<()> {
             "ping" => write_msg(&mut stdout, &ok_resp(id, json!({}))).await?,
             "tools/list" => write_msg(&mut stdout, &ok_resp(id, json!({ "tools": tools() }))).await?,
             "tools/call" => {
-                let resp = handle_call(&cfg, &mut session, &mut tunnels, req.get("params")).await;
+                let resp =
+                    handle_call(&cfg, &mut session, &mut tunnels, &mut pool, req.get("params")).await;
                 let result = match resp {
                     Ok(result) => result,
                     Err(e) => tool_text(&format!("error: {e}"), true),
@@ -86,6 +181,7 @@ pub async fn serve() -> ResultType<()> {
     for (_, tx) in tunnels.drain() {
         let _ = tx.send(Data::Close);
     }
+    pool.close("");
     session.logout().await.ok();
     Ok(())
 }
@@ -94,6 +190,7 @@ async fn handle_call(
     cfg: &AgentConfig,
     session: &mut ProSession,
     tunnels: &mut Tunnels,
+    pool: &mut Pool,
     params: Option<&Value>,
 ) -> ResultType<Value> {
     let params = params.cloned().unwrap_or(json!({}));
@@ -109,7 +206,7 @@ async fn handle_call(
     if name == "screenshot" {
         return screenshot_tool(cfg, session, &args).await;
     }
-    Ok(tool_text(&text_tool(cfg, session, tunnels, name, &args).await?, false))
+    Ok(tool_text(&text_tool(cfg, session, tunnels, pool, name, &args).await?, false))
 }
 
 /// Tools whose result is plain text.
@@ -117,6 +214,7 @@ async fn text_tool(
     cfg: &AgentConfig,
     session: &mut ProSession,
     tunnels: &mut Tunnels,
+    pool: &mut Pool,
     name: &str,
     args: &Value,
 ) -> ResultType<String> {
@@ -147,8 +245,10 @@ async fn text_tool(
                 return Ok("device_id and command are required".to_owned());
             }
             let password = password_for(session, &id, str_arg("password")).await;
-            let run =
-                terminal::run_command(&cfg.key, &session.token, &id, &password, &command).await?;
+            let mut conn = pool.take(cfg, &session.token, &id, &password, ConnType::TERMINAL).await?;
+            let run = terminal::run_on(&mut conn, &id, &command).await;
+            pool.put_back(&id, ConnType::TERMINAL, conn);
+            let run = run?;
             Ok(format!("[{} exit {}]\n{}", run.platform, run.exit_code, run.output))
         }
         "list_files" => {
@@ -157,8 +257,10 @@ async fn text_tool(
                 return Ok("device_id and path are required".to_owned());
             }
             let password = password_for(session, &id, str_arg("password")).await;
-            let entries =
-                files::list(&cfg.key, &session.token, &id, &password, &path, false).await?;
+            let mut conn = pool.take(cfg, &session.token, &id, &password, ConnType::FILE_TRANSFER).await?;
+            let entries = files::list_on(&mut conn, &id, &path, false).await;
+            pool.put_back(&id, ConnType::FILE_TRANSFER, conn);
+            let entries = entries?;
             let rows: Vec<Value> = entries
                 .iter()
                 .map(|e| json!({ "name": e.name, "is_dir": e.is_dir, "size": e.size, "modified": e.modified }))
@@ -172,15 +274,10 @@ async fn text_tool(
                 return Ok("device_id, remote_path and local_path are required".to_owned());
             }
             let password = password_for(session, &id, str_arg("password")).await;
-            let n = files::download(
-                &cfg.key,
-                &session.token,
-                &id,
-                &password,
-                &remote,
-                Path::new(&local),
-            )
-            .await?;
+            let mut conn = pool.take(cfg, &session.token, &id, &password, ConnType::FILE_TRANSFER).await?;
+            let n = files::download_on(&mut conn, &id, &remote, Path::new(&local)).await;
+            pool.put_back(&id, ConnType::FILE_TRANSFER, conn);
+            let n = n?;
             Ok(format!("downloaded {n} bytes to {local}"))
         }
         "open_tunnel" => {
@@ -218,6 +315,14 @@ async fn text_tool(
                 "tunnel open: localhost:{local_port} -> {remote_host}:{remote_port} via {id}"
             ))
         }
+        "disconnect" => {
+            let n = pool.close(&id);
+            Ok(if id.is_empty() {
+                format!("closed {n} open connection(s)")
+            } else {
+                format!("closed {n} open connection(s) to {id}")
+            })
+        }
         "list_tunnels" => {
             let mut ports: Vec<i32> = tunnels.keys().copied().collect();
             ports.sort_unstable();
@@ -239,8 +344,10 @@ async fn text_tool(
                 bail!("device_id, local_path and remote_path are required");
             }
             let password = password_for(session, &id, str_arg("password")).await;
-            let n = files::upload(&cfg.key, &session.token, &id, &password, Path::new(&local), &remote)
-                .await?;
+            let mut conn = pool.take(cfg, &session.token, &id, &password, ConnType::FILE_TRANSFER).await?;
+            let n = files::upload_on(&mut conn, &id, Path::new(&local), &remote).await;
+            pool.put_back(&id, ConnType::FILE_TRANSFER, conn);
+            let n = n?;
             Ok(format!("uploaded {n} bytes to {remote} on {id}"))
         }
         "make_directory" => {
@@ -249,7 +356,10 @@ async fn text_tool(
                 bail!("device_id and path are required");
             }
             let password = password_for(session, &id, str_arg("password")).await;
-            files::mkdir(&cfg.key, &session.token, &id, &password, &path).await?;
+            let mut conn = pool.take(cfg, &session.token, &id, &password, ConnType::FILE_TRANSFER).await?;
+            let done = files::mkdir_on(&mut conn, &id, &path).await;
+            pool.put_back(&id, ConnType::FILE_TRANSFER, conn);
+            done?;
             Ok(format!("created {path} on {id}"))
         }
         "remove_path" => {
@@ -259,7 +369,10 @@ async fn text_tool(
             }
             let is_dir = args.get("is_directory").and_then(|v| v.as_bool()).unwrap_or(false);
             let password = password_for(session, &id, str_arg("password")).await;
-            files::remove(&cfg.key, &session.token, &id, &password, &path, is_dir).await?;
+            let mut conn = pool.take(cfg, &session.token, &id, &password, ConnType::FILE_TRANSFER).await?;
+            let done = files::remove_on(&mut conn, &id, &path, is_dir).await;
+            pool.put_back(&id, ConnType::FILE_TRANSFER, conn);
+            done?;
             Ok(format!("removed {path} on {id}"))
         }
         "mouse" => {
@@ -382,7 +495,7 @@ fn tools() -> Value {
         },
         {
             "name": "run_terminal",
-            "description": "Run a shell command on a peer and return its stdout/stderr and exit code.",
+            "description": "Run a shell command on a peer, in a new shell each time, and return its stdout/stderr and exit code. Terminal and file calls keep their connection to the peer open for 2 minutes after the last call; call disconnect when the work on that computer is done.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -474,6 +587,14 @@ fn tools() -> Value {
                     "password": { "type": "string" }
                 },
                 "required": ["device_id", "local_port", "remote_host", "remote_port"]
+            }
+        },
+        {
+            "name": "disconnect",
+            "description": "Close the open terminal and file connections to a peer (to every peer when device_id is omitted). While they are open the computer shows the FPRemote panel; they also close by themselves 2 minutes after the last call. Tunnels close with close_tunnel.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "device_id": { "type": "string" } }
             }
         },
         {

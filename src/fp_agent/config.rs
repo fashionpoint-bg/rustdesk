@@ -16,6 +16,10 @@ const DEFAULT_USERNAME: &str = "agent";
 
 pub const APP_NAME: &str = "fpremote-agent";
 
+/// Who is connected, as the clinic computer's FPRemote panel shows it while the
+/// agent is in (LoginRequest my_name; the client core capitalises each word).
+const DISPLAY_NAME: &str = "FashionPoint агент";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
     pub host: String,
@@ -98,5 +102,9 @@ impl AgentConfig {
         Config::set_option("custom-rendezvous-server".to_owned(), self.host.clone());
         Config::set_option("relay-server".to_owned(), self.relay.clone());
         Config::set_option("api-server".to_owned(), self.api.clone());
+        hbb_common::config::BUILTIN_SETTINGS.write().unwrap().insert(
+            base::config::keys::OPTION_DISPLAY_NAME.to_owned(),
+            DISPLAY_NAME.to_owned(),
+        );
     }
 }
