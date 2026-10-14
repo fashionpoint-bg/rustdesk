@@ -307,7 +307,14 @@ void Win32Window::SetChildContent(HWND content) {
   MoveWindow(content, frame.left, frame.top, frame.right - frame.left,
              frame.bottom - frame.top, true);
 
-  SetFocus(child_content_);
+  // FashionPoint: SetFocus also activates the still hidden top-level window,
+  // which took the foreground from the person at the computer every time the
+  // session panel started for an incoming connection. Focus the content only
+  // when the window already has the foreground; WM_ACTIVATE focuses it when
+  // the window is activated later (show() + focus(), a click).
+  if (GetForegroundWindow() == window_handle_) {
+    SetFocus(child_content_);
+  }
 }
 
 RECT Win32Window::GetClientArea() {
