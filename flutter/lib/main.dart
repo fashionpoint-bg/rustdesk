@@ -309,17 +309,35 @@ showCmWindow({bool isStartup = false}) async {
         size: kConnectionManagerWindowSizeClosedChat, alwaysOnTop: true);
     await windowManager.waitUntilReadyToShow(windowOptions, null);
     bind.mainHideDock();
-    await Future.wait([
-      windowManager.show(),
-      windowManager.focus(),
-      windowManager.setOpacity(1)
-    ]);
+    if (isWindows) {
+      // FashionPoint: on top, but without taking the focus, so a session
+      // (an agent's command) does not interrupt the person typing here.
+      await Future.wait([
+        windowManager.show(inactive: true),
+        windowManager.setOpacity(1)
+      ]);
+    } else {
+      await Future.wait([
+        windowManager.show(),
+        windowManager.focus(),
+        windowManager.setOpacity(1)
+      ]);
+    }
     // ensure initial window size to be changed
     await windowManager.setSizeAlignment(
         kConnectionManagerWindowSizeClosedChat, Alignment.topRight);
     _isCmReadyToShow = true;
   } else if (_isCmReadyToShow) {
     if (await windowManager.getOpacity() != 1) {
+      if (isWindows) {
+        // FashionPoint: shown again (hideCmWindow minimized and hid it)
+        // without taking the focus, as at startup.
+        await windowManager.setOpacity(1);
+        await windowManager.show(inactive: true);
+        await windowManager.setSizeAlignment(
+            kConnectionManagerWindowSizeClosedChat, Alignment.topRight);
+        return;
+      }
       await windowManager.setOpacity(1);
       await windowManager.focus();
       await windowManager.minimize(); //needed

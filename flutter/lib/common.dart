@@ -730,6 +730,17 @@ closeConnection({String? id}) {
   }
 }
 
+/// FashionPoint: the connection manager window to the front for a new session.
+/// On Windows it does not take the focus, so a session (an agent's command)
+/// does not interrupt the person typing at this computer.
+Future<void> cmWindowOnTop() async {
+  if (!isWindows) {
+    return windowOnTop(null);
+  }
+  await windowManager.show(inactive: true);
+  await rustDeskWinManager.registerActiveWindow(kWindowMainId);
+}
+
 Future<void> windowOnTop(int? id) async {
   if (!isDesktop) {
     return;

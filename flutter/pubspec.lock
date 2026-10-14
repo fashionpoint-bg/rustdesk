@@ -1581,9 +1581,9 @@ packages:
     dependency: "direct main"
     description:
       path: "."
-      ref: cf4aef0512092fad9344a27ffe1c47ad83269dfc
-      resolved-ref: cf4aef0512092fad9344a27ffe1c47ad83269dfc
-      url: "https://github.com/rustdesk-org/window_manager"
+      ref: 84d28c3314cb6a42894c000937914b66ac9e6b15
+      resolved-ref: 84d28c3314cb6a42894c000937914b66ac9e6b15
+      url: "https://github.com/fashionpoint-bg/window_manager"
     source: git
     version: "0.3.6"
   window_size:

@@ -53,8 +53,9 @@ dependencies:
   flutter_rust_bridge: "1.80.1"
   window_manager:
     git:
-      url: https://github.com/rustdesk-org/window_manager
-      ref: cf4aef0512092fad9344a27ffe1c47ad83269dfc
+      # FashionPoint fork: show(inactive: true) works on Windows (connection manager panel without focus).
+      url: https://github.com/fashionpoint-bg/window_manager
+      ref: 84d28c3314cb6a42894c000937914b66ac9e6b15
   desktop_multi_window:
     git:
       url: https://github.com/rustdesk-org/rustdesk_desktop_multi_window
