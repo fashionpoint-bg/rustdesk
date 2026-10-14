@@ -175,7 +175,7 @@ def write(rel, data):
 def main():
     windows = [mark(FILLED, size, 1.0) for size in WINDOWS_SIZES]
     write_ico("flutter/windows/runner/resources/app_icon.ico", windows)  # FPRemote.exe: taskbar, windows, shortcuts
-    write_ico("res/icon.ico", windows)  # librustdesk.dll and the installer exe (libs/portable)
+    write_ico("res/icon.ico", windows)  # the installer exe (libs/portable/build.rs); librustdesk.dll has none
     write_ico("res/tray-icon.ico", [mark(FILLED, 32, 1.0)])  # tray; the image crate reads one entry
     write("flutter/assets/icon.svg", (document(FILLED, VIEWBOX) + "\n").encode())  # in the app, e.g. the panel
     write("res/icon.png", png_bytes(mark(FILLED, 1024, 1.0)))  # flutter_launcher_icons source (pubspec)
