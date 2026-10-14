@@ -94,6 +94,11 @@ if (-not $token) {
 }
 $token = "$token".Trim()
 if (-not $token) { throw 'No API token given.' }
+# Ctrl+V in the blue Windows PowerShell window enters one control character instead of pasting,
+# so check the token here, before anything is installed.
+if ($token.Length -lt 20 -or $token -match '[\x00-\x20\x7F]') {
+    throw 'This is not an API token (too short, or it has spaces or control characters). Paste it with a right-click: Ctrl+V does not paste in this window.'
+}
 
 if (Get-Service -Name $AppName -ErrorAction SilentlyContinue) {
     Write-Host "$AppName is already installed; skipping the installation."
