@@ -1581,8 +1581,8 @@ packages:
     dependency: "direct main"
     description:
       path: "."
-      ref: 84d28c3314cb6a42894c000937914b66ac9e6b15
-      resolved-ref: 84d28c3314cb6a42894c000937914b66ac9e6b15
+      ref: 297ba12bcdc60ce1d7d15cfd12ba32fa27967c09
+      resolved-ref: 297ba12bcdc60ce1d7d15cfd12ba32fa27967c09
       url: "https://github.com/fashionpoint-bg/window_manager"
     source: git
     version: "0.3.6"
