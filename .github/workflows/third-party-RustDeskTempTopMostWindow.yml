@@ -55,5 +55,6 @@ jobs:
         if: ${{ inputs.upload-artifact }}
         with:
             name: topmostwindow-artifacts-${{ inputs.platform }}
+            overwrite: true # FashionPoint: "Re-run failed jobs" uploads this name again
             path: |
               ./${{ env.build_output_dir }}/WindowInjection.dll

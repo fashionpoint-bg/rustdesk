@@ -11,8 +11,11 @@ name: FashionPoint build
 #   unsigned, to the release fp-test-<edition>).
 # The release is a draft from the first upload (flutter-build.yml passes draft to every upload when
 # fashionpoint is set). At the end its files are named FPRemote-Clinic-* / FPRemote-Staff-*, the clinic
-# release gets the install scripts from res/fashionpoint/clinic/, and the run's artifacts are deleted
-# (a public repo's artifacts can be downloaded by any GitHub user).
+# release gets the install scripts from res/fashionpoint/clinic/, and the run's artifacts are deleted once the
+# build succeeded (a public repo's artifacts can be downloaded by any GitHub user). After a failed build they stay:
+# "Re-run failed jobs" then rebuilds only what failed (.github/scripts/fp-finalize-release.sh).
+# Calls to outside services that fail now and then are retried: Apple's timestamp, notary and stapler services
+# (.github/scripts/retry.sh, fp-notarize.sh), Azure Artifact Signing and Google's NDK download (a second try).
 # Signing inputs. Windows: vars AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT,
 # AZURE_CERT_PROFILE + secret AZURE_CLIENT_SECRET. macOS: secrets MACOS_P12_BASE64, MACOS_P12_PASSWORD,
 # MACOS_CODESIGN_IDENTITY (the certificate's SHA-1 fingerprint, so it needs no shell quoting), APPLE_ID,
@@ -141,39 +144,13 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          sparse-checkout: res/fashionpoint
+          sparse-checkout: |
+            res/fashionpoint
+            .github/scripts
 
-      - name: Name the files, attach the install scripts, make the release a draft
-        run: |
-          set -euo pipefail
-          title=$([ "$EDITION" = staff ] && echo Staff || echo Clinic)
-          release=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-            --jq "map(select(.tag_name == \"$RELEASE_TAG\")) | first | .id // empty")
-          if [ -z "$release" ]; then
-            echo "No release $RELEASE_TAG: the build uploaded nothing." >&2
-            exit 1
-          fi
-          gh api "repos/$GITHUB_REPOSITORY/releases/$release/assets?per_page=100" --jq '.[] | "\(.id) \(.name)"' |
-            while read -r id name; do
-              case "$name" in
-                rustdesk*)
-                  gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/assets/$id" -f name="FPRemote-$title${name#rustdesk}" --jq .name
-                  ;;
-              esac
-            done
-          if [ "$EDITION" = clinic ]; then
-            gh release upload "$RELEASE_TAG" res/fashionpoint/clinic/*.ps1 --clobber -R "$GITHUB_REPOSITORY"
-          fi
-          # tag_name too: a draft edited without it loses its tag (it becomes untagged-<hash>, seen 14.10.2026).
-          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$release" -F draft=true -f tag_name="$RELEASE_TAG" \
-            -f name="FPRemote $title $RELEASE_TAG" \
-            -f body="FPRemote, $EDITION edition, built from $GITHUB_SHA (run $GITHUB_RUN_ID). Build result: ${{ needs.build.result }}." \
-            --jq '"draft=\(.draft) name=\(.name)"'
-
-      - name: Delete this run's artifacts
-        run: |
-          set -euo pipefail
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" --paginate --jq '.artifacts[] | "\(.id) \(.name)"' |
-            while read -r id name; do
-              gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$id" && echo "deleted $name"
-            done
+      # Also after a failed build, which keeps the artifacts so "Re-run failed jobs" rebuilds only what failed;
+      # that re-run ends with this job again (see the script).
+      - name: Name the files, attach the install scripts, make the release a draft, delete the artifacts
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: bash .github/scripts/fp-finalize-release.sh

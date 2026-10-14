@@ -375,6 +375,7 @@ jobs:
         with:
           name: rustdesk-unsigned-windows-${{ matrix.job.arch }}
           path: rustdesk
+          overwrite: true # FashionPoint: "Re-run failed jobs" uploads this name again
 
       - name: Sign rustdesk files
         if: env.UPLOAD_ARTIFACT == 'true' && env.SIGN_BASE_URL != '-2'
@@ -384,9 +385,31 @@ jobs:
           BASE_URL=${{ env.SIGN_BASE_URL }} SECRET_KEY=${{ secrets.SIGN_SECRET_KEY }} python3 res/job.py sign_files ./rustdesk/
 
       # FashionPoint: sign with Azure Artifact Signing as Fashion Point International Ltd. (the account and
-      # app registration nzis-signer uses). Only tag builds sign; branch builds stay unsigned.
+      # app registration nzis-signer uses). Only tag builds sign; branch builds stay unsigned. Azure's signing and
+      # timestamp services fail now and then, so a failed first try gets a second one after a pause.
       - name: Sign rustdesk files (Azure Artifact Signing)
+        id: azure-sign-files
         if: env.UPLOAD_ARTIFACT == 'true' && vars.AZURE_CLIENT_ID != '' && startsWith(github.ref, 'refs/tags/')
+        continue-on-error: true
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          azure-client-id: ${{ vars.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_CERT_PROFILE }}
+          files-folder: ${{ github.workspace }}\rustdesk
+          files-folder-filter: exe,dll
+          files-folder-recurse: true
+
+      - name: Wait before signing the files again
+        if: steps.azure-sign-files.outcome == 'failure'
+        shell: bash
+        run: sleep 60
+
+      - name: Sign rustdesk files (Azure Artifact Signing), second try
+        if: steps.azure-sign-files.outcome == 'failure'
         uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
@@ -494,7 +517,27 @@ jobs:
           BASE_URL=${{ env.SIGN_BASE_URL }} SECRET_KEY=${{ secrets.SIGN_SECRET_KEY }} python3 res/job.py sign_files ./SignOutput
 
       - name: Sign rustdesk self-extracted file and msi (Azure Artifact Signing)
+        id: azure-sign-output
         if: env.UPLOAD_ARTIFACT == 'true' && vars.AZURE_CLIENT_ID != '' && startsWith(github.ref, 'refs/tags/')
+        continue-on-error: true # FashionPoint: a second try below, as for the files
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          azure-client-id: ${{ vars.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_CERT_PROFILE }}
+          files-folder: ${{ github.workspace }}\SignOutput
+          files-folder-filter: exe,msi
+
+      - name: Wait before signing the self-extracted file again
+        if: steps.azure-sign-output.outcome == 'failure'
+        shell: bash
+        run: sleep 60
+
+      - name: Sign rustdesk self-extracted file and msi (Azure Artifact Signing), second try
+        if: steps.azure-sign-output.outcome == 'failure'
         uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
@@ -979,6 +1022,7 @@ jobs:
         with:
           name: rustdesk-unsigned-macos-${{ matrix.job.arch }}
           path: rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.dmg # can not upload the directory directly or tar.gz, which destroy the link structure, causing the codesign failed
+          overwrite: true # FashionPoint: "Re-run failed jobs" uploads this name again
 
       - name: Codesign app and create signed dmg
         if: env.MACOS_P12_BASE64 != null && env.UPLOAD_ARTIFACT == 'true'
@@ -1002,19 +1046,10 @@ jobs:
             ${{ secrets.MACOS_CODESIGN_IDENTITY }} \
             ./flutter/macos/Runner/Release.entitlements
           create-dmg --icon "FPRemote.app" 200 190 --hide-extension "FPRemote.app" --window-size 800 400 --app-drop-link 600 185 rustdesk-${{ env.VERSION }}.dmg ./flutter/build/macos/Build/Products/Release/FPRemote.app
-          codesign --force --options runtime -s ${{ secrets.MACOS_CODESIGN_IDENTITY }} --deep --strict rustdesk-${{ env.VERSION }}.dmg -vvv
-          # FashionPoint: notarize with the Apple ID + app-specific password nzis-signer uses, then staple
-          DMG=rustdesk-${{ env.VERSION }}.dmg
-          xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" --wait --output-format json > notarize.json
-          STATUS=$(python3 -c 'import json; print(json.load(open("notarize.json"))["status"])')
-          if [ "$STATUS" != "Accepted" ]; then
-            ID=$(python3 -c 'import json; print(json.load(open("notarize.json"))["id"])')
-            xcrun notarytool log "$ID" --apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID" || true
-            echo "Notarization status: $STATUS" >&2
-            exit 1
-          fi
-          xcrun stapler staple "$DMG"
+          # FashionPoint: the dmg signature asks Apple's timestamp service too, which fails now and then
+          bash ./.github/scripts/retry.sh 5 15 codesign --force --options runtime -s ${{ secrets.MACOS_CODESIGN_IDENTITY }} --deep --strict rustdesk-${{ env.VERSION }}.dmg -vvv
+          # FashionPoint: notarize with the Apple ID + app-specific password nzis-signer uses, then staple (both retried)
+          bash ./.github/scripts/fp-notarize.sh rustdesk-${{ env.VERSION }}.dmg
 
       - name: Rename rustdesk
         if: env.UPLOAD_ARTIFACT == 'true'
@@ -1195,8 +1230,23 @@ jobs:
             git apply ${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff
           fi
 
+      # FashionPoint: Google's NDK download aborts now and then (14.10.2026: three times within 85 s, the action's own
+      # retries), so a failed first try gets a second one after a pause. The NDK is not kept in the Actions cache:
+      # the repo's cache is already over GitHub's 10 GB with the Rust caches, and the NDK would push them out.
       - uses: nttld/setup-ndk@ed92fe6cadad69be94a966a7ee3271275e62f779 # v1
         id: setup-ndk
+        continue-on-error: true
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+          add-to-path: true
+
+      - name: Wait before downloading the NDK again
+        if: steps.setup-ndk.outcome == 'failure'
+        run: sleep 120
+
+      - uses: nttld/setup-ndk@ed92fe6cadad69be94a966a7ee3271275e62f779 # v1
+        id: setup-ndk-retry
+        if: steps.setup-ndk.outcome == 'failure'
         with:
           ndk-version: ${{ env.NDK_VERSION }}
           add-to-path: true
@@ -1255,8 +1305,8 @@ jobs:
 
       - name: Build rustdesk lib
         env:
-          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
-          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path || steps.setup-ndk-retry.outputs.ndk-path }}
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path || steps.setup-ndk-retry.outputs.ndk-path }}
         run: |
           rustup target add ${{ matrix.job.target }}
           cargo install cargo-ndk --version ${{ env.CARGO_NDK_VERSION }} --locked
@@ -1288,6 +1338,7 @@ jobs:
         with:
           name: librustdesk.so.${{ matrix.job.target }}
           path: ./target/${{ matrix.job.target }}/release/liblibrustdesk.so
+          overwrite: true # FashionPoint: "Re-run failed jobs" uploads this name again
 
       - name: Build rustdesk
         shell: bash
@@ -1369,6 +1420,7 @@ jobs:
         with:
           name: rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.apk
           path: ${{steps.sign-rustdesk.outputs.signedReleaseFile}}
+          overwrite: true # FashionPoint: "Re-run failed jobs" uploads this name again
 
       - name: Publish signed apk package
         if: env.ANDROID_SIGNING_KEY != null && env.UPLOAD_ARTIFACT == 'true'
@@ -1556,6 +1608,7 @@ jobs:
         with:
           name: rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.apk
           path: ${{steps.sign-rustdesk.outputs.signedReleaseFile}}
+          overwrite: true # FashionPoint: "Re-run failed jobs" uploads this name again
 
       - name: Publish signed apk package
         if: env.ANDROID_SIGNING_KEY != null && env.UPLOAD_ARTIFACT == 'true'

@@ -10,26 +10,29 @@ sign_args=(--force --options runtime --sign "$identity")
 if [[ "$identity" != "-" ]]; then
   sign_args+=(--timestamp)
 fi
+# FashionPoint: every signature asks Apple's timestamp service, which fails now and then ("The timestamp service is
+# not available.", 14.10.2026), so each codesign is tried again after a pause.
+retry="$(dirname "$0")/retry.sh"
 
 frameworks_path="$app_path/Contents/Frameworks"
 if [[ -d "$frameworks_path" ]]; then
   while IFS= read -r -d '' code; do
     if file -b "$code" | grep -q 'Mach-O'; then
-      codesign "${sign_args[@]}" "$code"
+      "$retry" 5 15 codesign "${sign_args[@]}" "$code"
     fi
   done < <(find "$frameworks_path" -type f -print0)
 
   while IFS= read -r -d '' framework; do
-    codesign "${sign_args[@]}" "$framework"
+    "$retry" 5 15 codesign "${sign_args[@]}" "$framework"
   done < <(find "$frameworks_path" -depth -type d -name '*.framework' -print0)
 fi
 
 service_path="$app_path/Contents/MacOS/service"
 if [[ -f "$service_path" ]]; then
-  codesign "${sign_args[@]}" "$service_path"
+  "$retry" 5 15 codesign "${sign_args[@]}" "$service_path"
 fi
 
-codesign "${sign_args[@]}" --generate-entitlement-der \
+"$retry" 5 15 codesign "${sign_args[@]}" --generate-entitlement-der \
   --entitlements "$entitlements" "$app_path"
 codesign --verify --deep --strict --verbose=2 "$app_path"
 
