@@ -291,13 +291,16 @@ class ChatModel with ChangeNotifier {
   }
 
   var _togglingCMSidePage = false; // protect order for await
+  // FashionPoint: the panel also opens this by itself (a tab with unread file
+  // logs gets selected when another session's tab closes), so on Windows it
+  // comes up without taking the focus.
   toggleCMSidePage() async {
     if (_togglingCMSidePage) return false;
     _togglingCMSidePage = true;
     if (_isShowCMSidePage) {
       _isShowCMSidePage = !_isShowCMSidePage;
       notifyListeners();
-      await windowManager.show();
+      await windowManager.show(inactive: isWindows);
       await windowManager.setSizeAlignment(
           kConnectionManagerWindowSizeClosedChat, Alignment.topRight);
     } else {
@@ -309,7 +312,7 @@ class ChatModel with ChangeNotifier {
         client.unreadChatMessageCount.value = 0;
       }
       requestChatInputFocus();
-      await windowManager.show();
+      await windowManager.show(inactive: isWindows);
       await windowManager.setSizeAlignment(
           kConnectionManagerWindowSizeOpenChat, Alignment.topRight);
       _isShowCMSidePage = !_isShowCMSidePage;
