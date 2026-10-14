@@ -39,13 +39,14 @@ COMMANDS:
     screenshot <id> <out.png>           Save a screenshot of the peer's display (last resort: shows patient data)
     mouse <id> <action> <x> <y>         move | click | double_click | right_click | scroll (with --dy N)
     key <id> <key>                      Press a key or combination: enter, esc, f5, ctrl+c, alt+f4, ...
-    type <id> -- <text>                 Type text on the peer
+    type <id> -- <text>                 Type text on the peer (--click <x,y> to focus a window first)
     mcp                                 Run the MCP server over stdio (for AI agents)
     help                                Show this help
 
 OPTIONS (peer commands):
     --password <pw>    Connect password for the peer (else taken from the shared address book)
     --display <n>      Display for screenshot/mouse (0 = primary)
+    --click <x,y>      key/type only: click this point first so the key goes to the window there
     --dy <n>           Wheel notches for mouse scroll (positive = up)
 ";
 
@@ -285,6 +286,20 @@ fn take_int_flag(rest: &mut Vec<String>, name: &str) -> ResultType<Option<i32>> 
     rest.drain(i..=i + 1);
     Ok(Some(value.parse::<i32>().map_err(|_| anyhow!("bad {name}: {value}"))?))
 }
+fn take_point_flag(rest: &mut Vec<String>, name: &str) -> ResultType<Option<(i32, i32)>> {
+    let Some(i) = rest.iter().position(|a| a == name) else {
+        return Ok(None);
+    };
+    let value = rest.get(i + 1).cloned().ok_or_else(|| anyhow!("{name} needs <x,y>"))?;
+    rest.drain(i..=i + 1);
+    let (x, y) = value
+        .split_once(',')
+        .ok_or_else(|| anyhow!("bad {name}: {value}, want <x,y>"))?;
+    Ok(Some((
+        x.trim().parse::<i32>().map_err(|_| anyhow!("bad {name} x: {x}"))?,
+        y.trim().parse::<i32>().map_err(|_| anyhow!("bad {name} y: {y}"))?,
+    )))
+}
 
 async fn run_screenshot() -> ResultType<()> {
     let mut a = peer_args("fpremote-agent screenshot <id> <out.png> [--display <n>] [--password <pw>]")?;
@@ -331,11 +346,13 @@ async fn run_mouse() -> ResultType<()> {
 }
 
 async fn run_keyboard(typing: bool) -> ResultType<()> {
-    let a = peer_args(if typing {
-        "fpremote-agent type <id> -- <text>"
+    let mut a = peer_args(if typing {
+        "fpremote-agent type <id> [--click <x,y>] [--display <n>] -- <text>"
     } else {
-        "fpremote-agent key <id> <key>"
+        "fpremote-agent key <id> [--click <x,y>] [--display <n>] <key>"
     })?;
+    let display = take_int_flag(&mut a.rest, "--display")?.unwrap_or(0);
+    let focus = take_point_flag(&mut a.rest, "--click")?.map(|(x, y)| (display, x, y));
     let what = a.rest.join(" ");
     if what.is_empty() {
         bail!("nothing to send");
@@ -347,10 +364,11 @@ async fn run_keyboard(typing: bool) -> ResultType<()> {
     };
     let (cfg, session) = connect().await?;
     let password = resolve_password(&session, &a.id, a.password).await;
-    let r = screen::keyboard(&cfg.key, &session.token, &a.id, &password, action).await;
+    let r = screen::keyboard(&cfg.key, &session.token, &a.id, &password, action, focus).await;
     session.logout().await.ok();
     r?;
-    println!("{} sent", if typing { "text" } else { "key" });
+    let where_ = focus.map_or(String::new(), |(_, x, y)| format!(" (clicked {x},{y} first)"));
+    println!("{} sent{where_}", if typing { "text" } else { "key" });
     Ok(())
 }
 

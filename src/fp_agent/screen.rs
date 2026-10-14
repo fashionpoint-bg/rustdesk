@@ -273,13 +273,23 @@ pub enum KeyboardAction<'a> {
     Press(&'a str),
 }
 
-/// Type text or press a key on the peer.
+/// Type text or press a key on the peer. `focus`, when given, is a point
+/// (display, x, y) to click first so the key goes to the window there.
+///
+/// Keys go to whatever window has focus on the peer, and a new connection
+/// raises the peer's FPRemote control window, which holds focus for about half
+/// a second (seen on a Windows runner, 14.10.2026); a key sent in that moment
+/// lands in that window, not the user's app, which is why Windows keyboard did
+/// nothing before. Mouse carries screen coordinates, so it was never affected.
+/// So wait the steal out, then click the target in the same connection (the
+/// control window grabs focus only at open, not again), then send the key.
 pub async fn keyboard(
     key: &str,
     token: &str,
     id: &str,
     password: &str,
     action: KeyboardAction<'_>,
+    focus: Option<(i32, i32, i32)>,
 ) -> ResultType<()> {
     let evt = match action {
         KeyboardAction::Type(text) => {
@@ -297,6 +307,22 @@ pub async fn keyboard(
         KeyboardAction::Press(combo) => key_event(combo)?,
     };
     let mut session = connect_and_login(key, token, id, password, ConnType::DEFAULT_CONN).await?;
+    // Wait for the control window's focus-steal at connection open to pass.
+    sleep(1.5).await;
+    if let Some((display, x, y)) = focus {
+        let (ox, oy) = display_origin(&session, display)?;
+        let (ax, ay) = (ox + x, oy + y);
+        for m in [
+            mouse_msg(MOUSE_TYPE_MOVE, ax, ay),
+            mouse_msg((MOUSE_BUTTON_LEFT << 3) | MOUSE_TYPE_DOWN, ax, ay),
+            mouse_msg((MOUSE_BUTTON_LEFT << 3) | MOUSE_TYPE_UP, ax, ay),
+        ] {
+            session.send(m).await?;
+            sleep(0.05).await;
+        }
+        // Let the click focus the window before the key.
+        sleep(0.3).await;
+    }
     let mut msg = Message::new();
     msg.set_key_event(evt);
     session.send(msg).await?;

@@ -284,9 +284,17 @@ async fn text_tool(
                 (true, false) => screen::KeyboardAction::Press(&key),
                 _ => bail!("give exactly one of text or key"),
             };
+            let focus = match (
+                args.get("click_x").and_then(|v| v.as_i64()),
+                args.get("click_y").and_then(|v| v.as_i64()),
+            ) {
+                (Some(x), Some(y)) => Some((int_arg(args, "display"), x as i32, y as i32)),
+                _ => None,
+            };
             let password = password_for(session, &id, str_arg("password")).await;
-            screen::keyboard(&cfg.key, &session.token, &id, &password, action).await?;
-            Ok(format!("keyboard input sent to {id}"))
+            screen::keyboard(&cfg.key, &session.token, &id, &password, action, focus).await?;
+            let where_ = focus.map_or(String::new(), |(_, x, y)| format!(" (clicked {x},{y} first)"));
+            Ok(format!("keyboard input sent to {id}{where_}"))
         }
         other => Ok(format!("unknown tool: {other}")),
     }
@@ -516,7 +524,7 @@ fn tools() -> Value {
         },
         {
             "name": "keyboard",
-            "description": "LAST RESORT. Type text, or press one key or combination (enter, esc, tab, f5, ctrl+c, alt+f4, ctrl+alt+del), on a peer. Input goes to the window that has focus there. Give exactly one of text or key. Logged with its reason.",
+            "description": "LAST RESORT. Type text, or press one key or combination (enter, esc, tab, f5, ctrl+c, alt+f4, ctrl+alt+del), on a peer. Input goes to the window that has focus there; pass click_x/click_y (pixels in that display's screenshot) to click a window first so the input goes to it. Give exactly one of text or key. Logged with its reason.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -524,6 +532,9 @@ fn tools() -> Value {
                     "reason": { "type": "string", "description": "Why the terminal or files cannot do this (written to the audit log)" },
                     "text": { "type": "string", "description": "Text to type as-is" },
                     "key": { "type": "string", "description": "Key or combination, e.g. enter, ctrl+c" },
+                    "click_x": { "type": "integer", "description": "Click this x (with click_y) to focus the target window before the input" },
+                    "click_y": { "type": "integer", "description": "Click this y (with click_x) to focus the target window before the input" },
+                    "display": { "type": "integer", "minimum": 0, "description": "Display for click_x/click_y (0 = primary)" },
                     "password": { "type": "string" }
                 },
                 "required": ["device_id", "reason"]
