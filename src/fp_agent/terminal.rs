@@ -162,7 +162,9 @@ fn decode(data: &[u8], compressed: bool) -> Vec<u8> {
 
 /// Drop terminal escape sequences, so the agent gets plain text: colours
 /// (`ESC[01;31m`), the bracketed-paste toggles bash prints around each prompt
-/// (`ESC[?2004h`, `ESC[?2004l`), cursor movement and window titles.
+/// (`ESC[?2004h`, `ESC[?2004l`), cursor movement and window titles. Cursor
+/// forward (`ESC[nC`) becomes n spaces: Windows' ConPTY sends it for the cells
+/// a TAB skips, which would otherwise run the text on both sides together.
 fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
@@ -174,10 +176,16 @@ fn strip_ansi(s: &str) -> String {
         match chars.next() {
             // CSI: parameter and intermediate bytes up to one final byte @..~
             Some('[') => {
+                let mut params = String::new();
                 for c in chars.by_ref() {
                     if ('@'..='~').contains(&c) {
+                        if c == 'C' {
+                            let n = params.parse::<usize>().unwrap_or(1).clamp(1, 512);
+                            out.push_str(&" ".repeat(n));
+                        }
                         break;
                     }
+                    params.push(c);
                 }
             }
             // OSC: up to BEL or ST (ESC \)
