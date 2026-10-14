@@ -164,7 +164,8 @@ jobs:
           if [ "$EDITION" = clinic ]; then
             gh release upload "$RELEASE_TAG" res/fashionpoint/clinic/*.ps1 --clobber -R "$GITHUB_REPOSITORY"
           fi
-          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$release" -F draft=true \
+          # tag_name too: a draft edited without it loses its tag (it becomes untagged-<hash>, seen 14.10.2026).
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$release" -F draft=true -f tag_name="$RELEASE_TAG" \
             -f name="FPRemote $title $RELEASE_TAG" \
             -f body="FPRemote, $EDITION edition, built from $GITHUB_SHA (run $GITHUB_RUN_ID). Build result: ${{ needs.build.result }}." \
             --jq '"draft=\(.draft) name=\(.name)"'
