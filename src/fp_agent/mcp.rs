@@ -524,7 +524,7 @@ fn tools() -> Value {
         },
         {
             "name": "keyboard",
-            "description": "LAST RESORT. Type text, or press one key or combination (enter, esc, tab, f5, ctrl+c, alt+f4, ctrl+alt+del), on a peer. Input goes to the window that has focus there; pass click_x/click_y (pixels in that display's screenshot) to click a window first so the input goes to it. Give exactly one of text or key. Logged with its reason.",
+            "description": "LAST RESORT. Type text, or press one key or combination (enter, esc, tab, f5, ctrl+c, alt+f4, ctrl+alt+del), on a peer. Input goes to the window that has focus there; click_x/click_y (pixels in that display's screenshot) click a window first so the input goes to it. On Windows they are required (except for ctrl+alt+del): the FPRemote session window takes the focus when the agent connects. Give exactly one of text or key. Logged with its reason.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

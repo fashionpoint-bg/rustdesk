@@ -47,6 +47,7 @@ OPTIONS (peer commands):
     --password <pw>    Connect password for the peer (else taken from the shared address book)
     --display <n>      Display for screenshot/mouse (0 = primary)
     --click <x,y>      key/type only: click this point first so the key goes to the window there
+                       (required on Windows, except for ctrl+alt+del)
     --dy <n>           Wheel notches for mouse scroll (positive = up)
 ";
 

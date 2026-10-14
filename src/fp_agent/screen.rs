@@ -283,6 +283,9 @@ pub enum KeyboardAction<'a> {
 /// nothing before. Mouse carries screen coordinates, so it was never affected.
 /// So wait the steal out, then click the target in the same connection (the
 /// control window grabs focus only at open, not again), then send the key.
+/// Without a click the window often keeps the focus (seen the same night), so
+/// on Windows a key without `focus` is refused instead of reported as sent;
+/// only ctrl+alt+del, which the peer's service handles itself, goes without.
 pub async fn keyboard(
     key: &str,
     token: &str,
@@ -291,6 +294,12 @@ pub async fn keyboard(
     action: KeyboardAction<'_>,
     focus: Option<(i32, i32, i32)>,
 ) -> ResultType<()> {
+    let focus_free = match &action {
+        KeyboardAction::Press(combo) => {
+            control_key(&combo.trim().to_lowercase()) == Some(ControlKey::CtrlAltDel)
+        }
+        KeyboardAction::Type(_) => false,
+    };
     let evt = match action {
         KeyboardAction::Type(text) => {
             if text.is_empty() {
@@ -307,6 +316,13 @@ pub async fn keyboard(
         KeyboardAction::Press(combo) => key_event(combo)?,
     };
     let mut session = connect_and_login(key, token, id, password, ConnType::DEFAULT_CONN).await?;
+    if focus.is_none() && !focus_free && session.platform() == "Windows" {
+        bail!(
+            "on Windows the FPRemote session window takes the focus when the agent connects, so this input \
+             would go to it: give a point on the window the input is for with --click <x,y> (MCP: click_x \
+             and click_y), found on a screenshot"
+        );
+    }
     // Wait for the control window's focus-steal at connection open to pass.
     sleep(1.5).await;
     if let Some((display, x, y)) = focus {
