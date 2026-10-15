@@ -1,5 +1,10 @@
 name: FashionPoint build
 
+# Releases are built on FashionPoint's own machines since 15.10.2026 (res/fashionpoint/build/, see fp-remote's
+# docs/client.md): GitHub stopped running this repository's workflows on 14.10.2026, and a GitHub build started by
+# a release tag would rename and re-draft a release built there. So a tag no longer starts this workflow; it stays
+# for a manual run (Actions > FashionPoint build > Run workflow, on the tag).
+#
 # Builds one FashionPoint edition with the upstream pipeline (flutter-build.yml), with that edition's
 # client config compiled in (load_custom_client in src/common.rs):
 # - clinic (secret FP_CLIENT_CONFIG_CLINIC): for clinic computers. Receives connections only, accepts
@@ -36,10 +41,6 @@ on:
         description: "Upload the build to the fp-test-<edition> release (unsigned)"
         type: boolean
         default: false
-  push:
-    tags:
-      - "fp-v*"
-      - "fp-staff-v*"
 
 permissions:
   contents: read
