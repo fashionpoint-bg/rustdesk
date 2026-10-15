@@ -33,7 +33,8 @@ while read -r id name; do
 done <<<"$assets"
 
 if [ "$EDITION" = clinic ]; then
-  gh release upload "$RELEASE_TAG" res/fashionpoint/clinic/*.ps1 --clobber -R "$GITHUB_REPOSITORY"
+  # Windows (.ps1) and macOS (.sh) install and uninstall scripts.
+  gh release upload "$RELEASE_TAG" res/fashionpoint/clinic/*.ps1 res/fashionpoint/clinic/*.sh --clobber -R "$GITHUB_REPOSITORY"
 fi
 
 # tag_name too: a draft edited without it loses its tag (it becomes untagged-<hash>, seen 14.10.2026).
