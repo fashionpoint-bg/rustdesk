@@ -9,12 +9,13 @@
 #  1. checks the edition's config (check-config.py) and that every machine has what it needs (--check stops here);
 #  2. generates the bridge files of the tag's commit in Docker (bridge.sh) and copies them, the config and the current
 #     build scripts to the Windows PC (C:\fpb) and the Mac (~/fpb, SSH host fpb-mac of ~/.config/fashionpoint/fpb-ssh.conf);
-#  3. builds and signs the Mac dmgs, arm64 then x86_64 (build-macos.sh --sign, in the background on the Mac), while
+#  3. builds and signs the Mac dmgs, x86_64 then arm64 (build-macos.sh --sign, in the background on the Mac), while
 #     the Windows x64 installer builds and signs on the PC (build-windows.ps1 -Sign);
 #  4. checks every file (verify-installer.py --signed and the installer's Authenticode signature; verify-dmg.sh --signed
 #     on the Mac), adds the SBOM (syft on a clean checkout, as the generate-sbom job) and, for the clinic edition, the
-#     install scripts of that commit, uploads them to a draft release of the tag and compares GitHub's digests with
-#     the files.
+#     install scripts of that commit and copies of the installers under names without the version (the website's
+#     FPRemote page links to releases/latest/download/<name>), uploads them to a draft release of the tag and compares
+#     GitHub's digests with the files.
 # Publishing stays a separate, human step (fp-remote's docs/client.md, "Build and release").
 # Not built here: Windows ARM64 (its job needs an ARM64 Windows machine) and Android (stage 2).
 # Secrets: ~/.config/fashionpoint/azure-signing.env (Windows signing), ~/fpb/secrets on the Mac (Developer ID and
@@ -86,9 +87,10 @@ mac_state=$(mac 'test -f ~/fpb/secrets/apple.env && test -f ~/fpb/secrets/signin
 grep -q secrets-ok <<<"$mac_state" || fail "the Mac has no signing secrets in ~/fpb/secrets"
 ! grep -q busy <<<"$mac_state" || fail "a build is already running on the Mac (~/fpb/logs)"
 mac_free=$(tail -1 <<<"$mac_state")
-# build-macos.sh wants 18 GB free when it starts; the arm64 build leaves about 8 GB less for the x86_64 one.
-[ "$mac_free" -ge "${FPB_MAC_MIN_FREE_GB:-27}" ] \
-  || fail "only $mac_free GB free on the Mac; the two dmgs need about ${FPB_MAC_MIN_FREE_GB:-27} (free space on it first)"
+# build-macos.sh wants 14 GB free when it starts. The x86_64 build goes first: a rebuild in the existing src-x86_64
+# takes under 1 GB, leaving the arm64 build (about 4.5 GB the first time, under 1 GB after) its 14.
+[ "$mac_free" -ge "${FPB_MAC_MIN_FREE_GB:-15}" ] \
+  || fail "only $mac_free GB free on the Mac; the two dmgs need about ${FPB_MAC_MIN_FREE_GB:-15} (free space on it first)"
 echo "$tag = $sha ($title), release: ${existing:-none}, Mac: $mac_free GB free"
 if [ -n "$check" ]; then
   echo "check done: nothing built"
@@ -116,9 +118,9 @@ scp -q -F "$ssh_conf" "$here"/build-macos.sh "$here"/setup-macos.sh "$here"/veri
 scp -q -F "$ssh_conf" "$config" "fpb-mac:fpb/config/$edition.json"
 tar -C "$bridge" -cf - . | mac "rm -rf ~/fpb/bridge/$short && mkdir -p ~/fpb/bridge/$short && tar -C ~/fpb/bridge/$short -xf -"
 
-step "Start the Mac builds (arm64, then x86_64)"
+step "Start the Mac builds (x86_64, then arm64)"
 mac "rm -f ~/fpb/logs/$tag.done ~/fpb/logs/$tag-*.rc; cd ~/fpb && nohup /bin/bash -c '
-  for arch in arm64 x86_64; do
+  for arch in x86_64 arm64; do
     /bin/bash scripts/build-macos.sh \$arch $edition $sha ~/fpb/config/$edition.json ~/fpb/bridge/$short ~/fpb/out/$tag-\$arch --sign \
       > logs/$tag-\$arch.log 2>&1
     echo \$? > logs/$tag-\$arch.rc
@@ -177,6 +179,11 @@ for arch in arm64 x86_64; do
   scp -q -F "$ssh_conf" "fpb-mac:fpb/out/$tag-$arch/FPRemote-$title-$version-$label.dmg" "$out/"
 done
 if [ "$edition" = clinic ]; then
+  # The same installers under names without the version: the website's FPRemote page links to
+  # releases/latest/download/<name> (fp-remote docs/pairing.md).
+  cp "$out/FPRemote-$title-$version-x86_64.exe" "$out/FPRemote-$title-Windows-x64.exe"
+  cp "$out/FPRemote-$title-$version-aarch64.dmg" "$out/FPRemote-$title-macOS-AppleChip.dmg"
+  cp "$out/FPRemote-$title-$version-x86_64.dmg" "$out/FPRemote-$title-macOS-Intel.dmg"
   # The install and uninstall scripts of the same commit, as the GitHub build attached them.
   while read -r path; do
     git -C "$src" show "$sha:$path" > "$out/$(basename "$path")"
@@ -204,6 +211,11 @@ if [ -z "$existing" ]; then
       echo "- Windows 64-bit: \`FPRemote-$title-$version-x86_64.exe\`"
       echo "- macOS с Apple чип: \`FPRemote-$title-$version-aarch64.dmg\`"
       echo "- macOS с Intel: \`FPRemote-$title-$version-x86_64.dmg\`"
+      if [ "$edition" = clinic ]; then
+        echo
+        echo "Същите файлове и с имена без версия (\`FPRemote-Clinic-Windows-x64.exe\`, \`FPRemote-Clinic-macOS-AppleChip.dmg\`,"
+        echo "\`FPRemote-Clinic-macOS-Intel.dmg\`): към тях води страницата FPRemote в профила във FashionPoint."
+      fi
       echo
       echo "Изградена от комит $sha на машините на FashionPoint."
     } > "$notes"

@@ -30,9 +30,12 @@ here=$(cd "$(dirname "$0")" && pwd)
 started=$(date +%s)
 step() { echo "=== $* ($(( ($(date +%s) - started) / 60 )) min, $(df -g "$HOME" | awk 'NR==2 {print $4}') GB free)"; }
 fail() { echo "build-macos.sh: $*" >&2; exit 1; }
-# The Mac is someone's own computer: one build takes about 12 GB, so do not start without room for it.
+# The Mac is someone's own computer, so do not start without room. Measured 15.10.2026: the first build of an
+# architecture leaves about 4.5 GB (src-<arch> with its target/ 3.5 GB, its pub cache and vcpkg packages) and needs
+# about 6 GB while it runs; a rebuild in an existing src-<arch> adds well under 1 GB. 14 GB at the start leaves macOS
+# at least 8 GB.
 free_gb=$(df -g "$HOME" | awk 'NR==2 {print $4}')
-[ "$free_gb" -ge "${FPB_MIN_FREE_GB:-18}" ] || fail "only $free_gb GB free on the disk (needs ${FPB_MIN_FREE_GB:-18})"
+[ "$free_gb" -ge "${FPB_MIN_FREE_GB:-14}" ] || fail "only $free_gb GB free on the disk (needs ${FPB_MIN_FREE_GB:-14})"
 [ -x /opt/homebrew/bin/brew ] && eval "$(/opt/homebrew/bin/brew shellenv)"
 case "$arch" in
   arm64) triplet=arm64-osx target=aarch64-apple-darwin label=aarch64 run=() extra=--screencapturekit min=12.3 ;;
