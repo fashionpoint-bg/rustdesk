@@ -1202,6 +1202,25 @@ pub fn main_deploy_device(token: String, id: String) -> String {
     }
 }
 
+/// FashionPoint: whether the window shows the card for the code that pairs this clinic computer (fp_pair.rs).
+pub fn main_fp_needs_pairing() -> bool {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    return crate::fp_pair::needs_pairing_from_ui();
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    return false;
+}
+
+/// FashionPoint: pairs this computer with a code from the website. JSON {"outcome": ..., "alias": ...}.
+pub fn main_fp_pair(code: String) -> String {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    return crate::fp_pair::pair_from_ui(code).to_json();
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let _ = code;
+        String::new()
+    }
+}
+
 pub fn main_resolve_avatar_url(avatar: String) -> SyncReturn<String> {
     SyncReturn(resolve_avatar_url(avatar))
 }

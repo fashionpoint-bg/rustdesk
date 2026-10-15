@@ -2,6 +2,19 @@ lazy_static::lazy_static! {
 pub static ref T: std::collections::HashMap<&'static str, &'static str> =
     [
         ("desk_tip", "Your desktop can be accessed with this ID and password."),
+        // FashionPoint: pairing a clinic computer with a code from the website (src/fp_pair.rs).
+        ("fp-pair-title", "Connect this computer"),
+        ("fp-pair-tip", "Enter the code from your FashionPoint profile (menu FPRemote, Install)."),
+        ("fp-pair-code", "Code"),
+        ("fp-pair-button", "Connect"),
+        ("fp-pair-done", "The computer is connected:"),
+        ("fp-pair-wrong-code", "The code is wrong, already used or expired. Get a new code from your profile."),
+        ("fp-pair-id-taken", "Another computer already uses this computer's ID. Please call FashionPoint."),
+        ("fp-pair-too-many-attempts", "Too many attempts. Try again in 15 minutes."),
+        ("fp-pair-website-error", "The FashionPoint website could not connect the computer. Try again in a moment."),
+        ("fp-pair-no-connection", "Cannot reach the FashionPoint website. Check the internet connection and try again."),
+        ("fp-pair-not-configured", "This version of FPRemote cannot be connected with a code. Please call FashionPoint."),
+        ("fp-pair-service-unavailable", "The FPRemote service does not respond. Restart the computer and try again."),
         ("connecting_status", "Connecting to the RustDesk network..."),
         ("not_ready_status", "Not ready. Please check your connection"),
         ("ID/Relay Server", "ID/Relay server"),

@@ -2046,5 +2046,13 @@ class RustdeskImpl {
     throw UnimplementedError("mainDeployDevice");
   }
 
+  Future<bool> mainFpNeedsPairing({dynamic hint}) {
+    return Future.value(false);
+  }
+
+  Future<String> mainFpPair({required String code, dynamic hint}) {
+    throw UnimplementedError("mainFpPair");
+  }
+
   void dispose() {}
 }

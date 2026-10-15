@@ -19,6 +19,9 @@ mod lan;
 mod rendezvous_mediator;
 #[cfg(not(any(target_os = "ios")))]
 pub use self::rendezvous_mediator::*;
+// FashionPoint: pairing a clinic computer with the FashionPoint website.
+#[cfg(not(any(target_os = "ios")))]
+mod fp_pair;
 /// cbindgen:ignore
 pub mod common;
 #[cfg(not(any(target_os = "ios")))]

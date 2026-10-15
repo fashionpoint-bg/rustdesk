@@ -49,6 +49,11 @@ class _DesktopHomePageState extends State<DesktopHomePage>
   var watchIsCanRecordAudio = false;
   Timer? _updateTimer;
   bool isCardClosed = false;
+  // FashionPoint: the card for the code that pairs this clinic computer with the website (src/fp_pair.rs).
+  bool _fpNeedsPairing = false;
+  bool _fpPairing = false;
+  String _fpPairError = '';
+  final _fpPairCodeController = TextEditingController();
 
   final RxBool _editHover = false.obs;
   final RxBool _block = false.obs;
@@ -554,7 +559,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
       }
     }
     if (bind.isIncomingOnly()) {
-      return Align(
+      final quit = Align(
         alignment: Alignment.centerRight,
         child: OutlinedButton(
           onPressed: () {
@@ -567,8 +572,137 @@ class _DesktopHomePageState extends State<DesktopHomePage>
           child: Text(translate('Quit')),
         ),
       ).marginAll(14);
+      if (_fpNeedsPairing) {
+        return Column(children: [_buildFpPairingCard(), quit]);
+      }
+      return quit;
     }
     return Container();
+  }
+
+  // FashionPoint: the outcomes of src/fp_pair.rs other than paired and their texts.
+  static const _fpPairErrors = {
+    'wrong_code': 'fp-pair-wrong-code',
+    'id_taken': 'fp-pair-id-taken',
+    'too_many_attempts': 'fp-pair-too-many-attempts',
+    'no_connection': 'fp-pair-no-connection',
+    'not_configured': 'fp-pair-not-configured',
+    'service_unavailable': 'fp-pair-service-unavailable',
+  };
+
+  Future<void> _fpPair() async {
+    final code = _fpPairCodeController.text.trim();
+    if (_fpPairing || code.isEmpty) return;
+    setState(() {
+      _fpPairing = true;
+      _fpPairError = '';
+    });
+    var outcome = '';
+    var alias = '';
+    try {
+      final result = jsonDecode(await bind.mainFpPair(code: code));
+      outcome = result['outcome'] ?? '';
+      alias = result['alias'] ?? '';
+    } catch (e) {
+      debugPrint('FPRemote pairing: $e');
+    }
+    if (!mounted) return;
+    final paired = outcome == 'paired';
+    setState(() {
+      _fpPairing = false;
+      if (paired) {
+        _fpNeedsPairing = false;
+        _fpPairCodeController.clear();
+      } else {
+        _fpPairError = _fpPairErrors[outcome] ?? 'fp-pair-website-error';
+      }
+    });
+    if (paired) {
+      showToast('${translate('fp-pair-done')} $alias'.trim());
+    }
+  }
+
+  // FashionPoint: shown while the console waits for this computer to be deployed.
+  Widget _buildFpPairingCard() {
+    const white = Colors.white;
+    OutlineInputBorder border(Color color, double width) => OutlineInputBorder(
+        borderRadius: BorderRadius.circular(10),
+        borderSide: BorderSide(color: color, width: width));
+    return Container(
+      margin: const EdgeInsets.only(top: 20),
+      padding: const EdgeInsets.all(20),
+      decoration: const BoxDecoration(
+          gradient: LinearGradient(
+        begin: Alignment.centerLeft,
+        end: Alignment.centerRight,
+        colors: [
+          Color.fromARGB(255, 226, 66, 188),
+          Color.fromARGB(255, 244, 114, 124),
+        ],
+      )),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(translate('fp-pair-title'),
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                      color: white, fontWeight: FontWeight.bold, fontSize: 15))
+              .marginOnly(bottom: 6),
+          Text(translate('fp-pair-tip'),
+                  style: const TextStyle(
+                      height: 1.5, color: white, fontSize: 13))
+              .marginOnly(bottom: 14),
+          TextField(
+            controller: _fpPairCodeController,
+            enabled: !_fpPairing,
+            textAlign: TextAlign.center,
+            textCapitalization: TextCapitalization.characters,
+            autocorrect: false,
+            enableSuggestions: false,
+            cursorColor: white,
+            style:
+                const TextStyle(color: white, fontSize: 20, letterSpacing: 3),
+            decoration: InputDecoration(
+              isDense: true,
+              hintText: translate('fp-pair-code'),
+              hintStyle: const TextStyle(
+                  color: Colors.white70, fontSize: 14, letterSpacing: 0),
+              contentPadding:
+                  const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+              enabledBorder: border(Colors.white70, 1),
+              focusedBorder: border(white, 2),
+              disabledBorder: border(Colors.white38, 1),
+            ),
+            onSubmitted: (_) => _fpPair(),
+          ),
+          if (_fpPairError.isNotEmpty)
+            Text(translate(_fpPairError),
+                    style: const TextStyle(
+                        color: white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 12,
+                        height: 1.4))
+                .marginOnly(top: 10),
+          if (_fpPairing)
+            const LinearProgressIndicator(
+                    color: white, backgroundColor: Colors.white24)
+                .marginOnly(top: 14),
+          Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+            FixedWidthButton(
+              width: 150,
+              padding: 8,
+              isOutline: true,
+              text: translate('fp-pair-button'),
+              textColor: white,
+              borderColor: white,
+              textSize: 20,
+              radius: 10,
+              onTap: () => _fpPair(),
+            ),
+          ]).marginOnly(top: 14),
+        ],
+      ),
+    );
   }
 
   Widget buildInstallCard(String title, String content, String btnText,
@@ -701,6 +835,13 @@ class _DesktopHomePageState extends State<DesktopHomePage>
       if (systemError != error) {
         systemError = error;
         setState(() {});
+      }
+      if (bind.isIncomingOnly() && !_fpPairing) {
+        final needsPairing = await bind.mainFpNeedsPairing();
+        if (mounted && !_fpPairing && needsPairing != _fpNeedsPairing) {
+          _fpNeedsPairing = needsPairing;
+          setState(() {});
+        }
       }
       final v = await mainGetBoolOption(kOptionStopService);
       if (v != svcStopped.value) {
@@ -870,6 +1011,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
     _uniLinksSubscription?.cancel();
     Get.delete<RxBool>(tag: 'stop-service');
     _updateTimer?.cancel();
+    _fpPairCodeController.dispose();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }

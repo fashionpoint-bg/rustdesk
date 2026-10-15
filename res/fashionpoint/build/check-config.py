@@ -43,6 +43,12 @@ if edition == "clinic":
     expect(override, "verification-method", "use-permanent-password")
     if override.get("register-device") == "N":
         errors.append("register-device must not be N: clinic computers register with the console")
+    # src/fp_pair.rs: the website that pairs the computer with a code. A default, not an override, so an
+    # administrator can point a test computer at a test website (FPRemote --option fp-pair-url <url>).
+    if not str((config.get("default-settings") or {}).get("fp-pair-url", "")).startswith("https://"):
+        errors.append("default-settings.fp-pair-url must be the https address of the website's pairing endpoint")
+    if "fp-pair-url" in override:
+        errors.append("fp-pair-url belongs in default-settings: an override cannot be pointed at a test website")
     if config.get("disable-settings") == "Y":
         expect(override, "allow-command-line-settings-when-settings-disabled", "Y")
 else:

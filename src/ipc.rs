@@ -376,6 +376,10 @@ pub enum Data {
     PrivacyModeState((i32, PrivacyModeState, String)),
     TestRendezvousServer,
     Deployed,
+    /// FashionPoint: the window asks the service to pair the computer with a code from the website (fp_pair.rs).
+    FpPair(String),
+    /// FashionPoint: the service's answer to FpPair.
+    FpPairResult(crate::fp_pair::PairResult),
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     Keyboard(DataKeyboard),
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -982,6 +986,8 @@ async fn handle(data: Data, stream: &mut Connection) {
                     value = Some(Config::get_unlock_pin());
                 } else if name == "trusted-devices" {
                     value = Some(Config::get_trusted_devices_json());
+                } else if name == crate::fp_pair::CONFIG_NEEDS_PAIRING {
+                    value = Some(if crate::fp_pair::needs_pairing() { "Y" } else { "N" }.to_owned());
                 } else {
                     value = None;
                 }
@@ -1077,6 +1083,10 @@ async fn handle(data: Data, stream: &mut Connection) {
         Data::Deployed => {
             crate::rendezvous_mediator::NEEDS_DEPLOY.store(false, Ordering::SeqCst);
             crate::rendezvous_mediator::RendezvousMediator::restart();
+        }
+        Data::FpPair(code) => {
+            let result = crate::fp_pair::pair(code).await;
+            allow_err!(stream.send(&Data::FpPairResult(result)).await);
         }
         #[cfg(feature = "flutter")]
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -2015,6 +2025,18 @@ pub async fn notify_deployed() -> ResultType<()> {
     let mut c = connect(1000, "").await?;
     c.send(&Data::Deployed).await?;
     Ok(())
+}
+
+/// FashionPoint: asks the service to pair this computer with `code` from the website (fp_pair.rs).
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[tokio::main(flavor = "current_thread")]
+pub async fn fp_pair(code: String) -> ResultType<crate::fp_pair::PairResult> {
+    let mut c = connect(1000, "").await?;
+    c.send(&Data::FpPair(code)).await?;
+    match c.next_timeout(crate::fp_pair::UI_TIMEOUT_MS).await? {
+        Some(Data::FpPairResult(result)) => Ok(result),
+        _ => bail!("the service did not answer the pairing request"),
+    }
 }
 
 #[tokio::main(flavor = "current_thread")]

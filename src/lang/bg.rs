@@ -2,6 +2,19 @@ lazy_static::lazy_static! {
 pub static ref T: std::collections::HashMap<&'static str, &'static str> =
     [
         ("Status", "Състояне"),
+        // FashionPoint: pairing a clinic computer with a code from the website (src/fp_pair.rs).
+        ("fp-pair-title", "Свържете компютъра"),
+        ("fp-pair-tip", "Въведете кода от профила си във FashionPoint (меню FPRemote, Инсталиране)."),
+        ("fp-pair-code", "Код"),
+        ("fp-pair-button", "Свържи"),
+        ("fp-pair-done", "Компютърът е свързан:"),
+        ("fp-pair-wrong-code", "Кодът е грешен, вече е използван или е изтекъл. Вземете нов код от профила си."),
+        ("fp-pair-id-taken", "Номерът на този компютър вече се ползва от друг компютър. Обадете се на FashionPoint."),
+        ("fp-pair-too-many-attempts", "Твърде много опити. Опитайте отново след 15 минути."),
+        ("fp-pair-website-error", "Сайтът на FashionPoint не успя да свърже компютъра. Опитайте отново след малко."),
+        ("fp-pair-no-connection", "Няма връзка със сайта на FashionPoint. Проверете интернета и опитайте отново."),
+        ("fp-pair-not-configured", "Тази версия на FPRemote не може да се свърже с код. Обадете се на FashionPoint."),
+        ("fp-pair-service-unavailable", "Услугата FPRemote не отговаря. Рестартирайте компютъра и опитайте отново."),
         ("Your Desktop", "Вашата работна среда"),
         ("desk_tip", "Вашата работна среда не може да бъде достъпена с този потребителски код и парола."),
         ("Password", "Парола"),
