@@ -1,16 +1,17 @@
 name: fpremote-agent
 
 # FashionPoint fork: builds the FPRemote headless agent (src/fp_agent, the
-# `fp-agent` feature, binary `fpremote-agent`) for Linux x86_64 on pushes to the
-# fp-agent branch. No signing and no release: the binary is a workflow
-# artifact. Design and status: the fp-remote repo, docs/agent.md.
+# `fp-agent` feature, binary `fpremote-agent`) for Linux x86_64. No signing and
+# no release: the binary is a workflow artifact. Design and status: the
+# fp-remote repo, docs/agent.md.
 # The steps mirror the dev server that verified the agent live (Ubuntu 24.04,
 # Rust 1.75, vcpkg at the commit the other jobs pin, classic-mode install).
+# Since 15.10.2026 the agent is built locally, in Docker with the same steps
+# (res/fashionpoint/build/build-agent.sh on the fashionpoint branch): GitHub
+# stopped running this repository's workflows on 14.10.2026. A push no longer
+# starts this workflow; it stays for a manual run.
 
 on:
-  push:
-    branches:
-      - fp-agent
   workflow_dispatch:
 
 permissions:
