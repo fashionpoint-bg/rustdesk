@@ -15,6 +15,12 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("fp-pair-no-connection", "Няма връзка със сайта на FashionPoint. Проверете интернета и опитайте отново."),
         ("fp-pair-not-configured", "Тази версия на FPRemote не може да се свърже с код. Обадете се на FashionPoint."),
         ("fp-pair-service-unavailable", "Услугата FPRemote не отговаря. Рестартирайте компютъра и опитайте отново."),
+        // FashionPoint: the clinic edition installs before it asks for the code (fp_pair::installs_first).
+        ("fp-install-title", "Инсталиране на FPRemote"),
+        ("fp-install-step-install", "Натиснете „Инсталирай“. Windows ще попита дали да разреши на приложението да прави промени: натиснете „Да“."),
+        ("fp-install-step-code", "След това FPRemote ще се отвори и ще поиска код. Вземете го от профила си във FashionPoint (меню FPRemote, Инсталиране)."),
+        ("fp-install-failed", "FPRemote не се инсталира. Натиснете „Инсталирай“ отново и, когато Windows попита, натиснете „Да“. Ако Windows иска парола на администратор и нямате такава, обадете се на FashionPoint."),
+        ("fp-setup-next", "Когато завършите настройката, тук ще се появи полето за кода от профила ви във FashionPoint."),
         ("Your Desktop", "Вашата работна среда"),
         ("desk_tip", "Вашата работна среда не може да бъде достъпена с този потребителски код и парола."),
         ("Password", "Парола"),

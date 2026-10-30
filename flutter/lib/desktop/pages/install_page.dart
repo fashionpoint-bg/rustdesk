@@ -68,6 +68,11 @@ class _InstallPageBodyState extends State<_InstallPageBody>
   final RxBool printer = false.obs;
   final RxBool showProgress = false.obs;
   final RxBool btnEnabled = true.obs;
+  // FashionPoint: the clinic edition's own page (fp_pair::installs_first): two steps that end at the code
+  // from the FashionPoint profile, the stock defaults instead of the choices, and a message instead of
+  // closing when nothing was installed.
+  final bool _fpClinic = bind.isIncomingOnly();
+  final RxBool _fpFailed = false.obs;
 
   // todo move to theme.
   final buttonStyle = OutlinedButton.styleFrom(
@@ -128,6 +133,7 @@ class _InstallPageBodyState extends State<_InstallPageBody>
 
   @override
   Widget build(BuildContext context) {
+    if (_fpClinic) return _buildFpClinic(context);
     final double em = 13;
     final isDarkTheme = MyTheme.currentThemeMode() == ThemeMode.dark;
     return Scaffold(
@@ -248,6 +254,86 @@ class _InstallPageBodyState extends State<_InstallPageBody>
             ],
           ).paddingSymmetric(horizontal: 4 * em, vertical: 3 * em),
         ));
+  }
+
+  Widget _buildFpClinic(BuildContext context) {
+    final double em = 13;
+    const textStyle = TextStyle(fontSize: 15, height: 1.5);
+    Widget step(String number, String text) => Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('$number.', style: textStyle).marginOnly(right: 8),
+            Expanded(child: Text(translate(text), style: textStyle)),
+          ],
+        ).marginOnly(bottom: em);
+    return Scaffold(
+        backgroundColor: null,
+        body: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(translate('fp-install-title'),
+                      style: Theme.of(context).textTheme.headlineMedium)
+                  .marginOnly(bottom: 2 * em),
+              step('1', 'fp-install-step-install'),
+              step('2', 'fp-install-step-code'),
+              Obx(() => _fpFailed.value
+                  ? Text(translate('fp-install-failed'),
+                          style: TextStyle(
+                              color: Theme.of(context).colorScheme.error,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 14,
+                              height: 1.5))
+                      .marginOnly(top: em)
+                  : const Offstage()),
+              Row(
+                children: [
+                  Expanded(
+                    child: Obx(() => showProgress.value
+                        ? LinearProgressIndicator().marginOnly(right: 10)
+                        : const Offstage()),
+                  ),
+                  Obx(
+                    () => OutlinedButton.icon(
+                      icon: Icon(Icons.close_rounded, size: 16),
+                      label: Text(translate('Cancel')),
+                      onPressed:
+                          btnEnabled.value ? () => windowManager.close() : null,
+                      style: buttonStyle,
+                    ).marginOnly(right: 10),
+                  ),
+                  Obx(
+                    () => ElevatedButton.icon(
+                      icon: Icon(Icons.done_rounded, size: 16),
+                      label: Text(translate('Install')),
+                      onPressed: btnEnabled.value ? _fpInstall : null,
+                      style: buttonStyle,
+                    ),
+                  ),
+                ],
+              ).marginOnly(top: 2 * em),
+            ],
+          ).paddingSymmetric(horizontal: 4 * em, vertical: 3 * em),
+        ));
+  }
+
+  void _fpInstall() async {
+    btnEnabled.value = false;
+    showProgress.value = true;
+    _fpFailed.value = false;
+    String args = '';
+    if (startmenu.value) args += ' startmenu';
+    if (desktopicon.value) args += ' desktopicon';
+    if (printer.value) args += ' printer';
+    try {
+      // Returns only when nothing was installed: once installed, this process exits.
+      await bind.installFpInstall(options: args, path: controller.text);
+    } catch (e) {
+      debugPrint('FPRemote install: $e');
+    }
+    _fpFailed.value = true;
+    btnEnabled.value = true;
+    showProgress.value = false;
   }
 
   void install() {

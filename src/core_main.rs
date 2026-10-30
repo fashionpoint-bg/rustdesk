@@ -120,7 +120,10 @@ pub fn core_main() -> Option<Vec<String>> {
     if _is_flutter_invoke_new_connection {
         return core_main_invoke_new_connection(std::env::args());
     }
-    let click_setup = cfg!(windows) && args.is_empty() && crate::common::is_setup(&arg_exe);
+    // FashionPoint: an uninstalled clinic edition opens its installation whatever the file is called.
+    let click_setup = cfg!(windows)
+        && args.is_empty()
+        && (crate::common::is_setup(&arg_exe) || crate::fp_pair::installs_first());
     if click_setup && !config::is_disable_installation() {
         args.push("--install".to_owned());
         flutter_args.push("--install".to_string());

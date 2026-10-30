@@ -2442,6 +2442,12 @@ pub fn install_install_me(options: String, path: String) {
     install_me(options, path, false, false);
 }
 
+/// FashionPoint: installs the clinic edition from its install page; exits once installed, else returns
+/// the error (fp_pair::install_from_ui).
+pub fn install_fp_install(options: String, path: String) -> String {
+    crate::fp_pair::install_from_ui(options, path)
+}
+
 pub fn install_install_path() -> SyncReturn<String> {
     SyncReturn(install_path())
 }

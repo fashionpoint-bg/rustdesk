@@ -86,6 +86,35 @@ pub fn needs_pairing() -> bool {
     NEEDS_DEPLOY.load(Ordering::SeqCst) && pair_url().is_some()
 }
 
+/// Whether a plain start opens the installation (Windows): the clinic edition can pair, and stays
+/// reachable, only once installed.
+pub fn installs_first() -> bool {
+    #[cfg(windows)]
+    return hbb_common::config::is_incoming_only()
+        && pair_url().is_some()
+        && !crate::platform::is_installed();
+    #[cfg(not(windows))]
+    return false;
+}
+
+/// Installs from the clinic install page and exits like the stock page (the installed FPRemote opens
+/// by itself), but returns the error when nothing was installed, so the page can say so.
+pub fn install_from_ui(options: String, path: String) -> String {
+    #[cfg(windows)]
+    return match crate::platform::windows::install_me(&options, path, false, false) {
+        Ok(()) => std::process::exit(0),
+        Err(err) => {
+            log::error!("FPRemote install: {}", err);
+            err.to_string()
+        }
+    };
+    #[cfg(not(windows))]
+    {
+        let _ = (options, path);
+        "not supported on this platform".to_owned()
+    }
+}
+
 /// Pairs the computer with `code`. Runs in the process that owns the ID, the keys and the password.
 pub async fn pair(code: String) -> PairResult {
     let _one_at_a_time = PAIRING.lock().await;

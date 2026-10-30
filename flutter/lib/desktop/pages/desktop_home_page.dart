@@ -771,6 +771,17 @@ class _DesktopHomePageState extends State<DesktopHomePage>
                                 color: Colors.white,
                                 fontWeight: FontWeight.normal,
                                 fontSize: 13),
+                          ).marginOnly(bottom: 20),
+                        // FashionPoint: only one card shows, so a setup card (install, a macOS
+                        // permission) hides the pairing card; it says that the code comes after it.
+                        if (_fpNeedsPairing && btnText.isNotEmpty)
+                          Text(
+                            translate('fp-setup-next'),
+                            style: TextStyle(
+                                height: 1.5,
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 13),
                           ).marginOnly(bottom: 20)
                       ] +
                       (btnText.isNotEmpty

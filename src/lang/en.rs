@@ -15,6 +15,12 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("fp-pair-no-connection", "Cannot reach the FashionPoint website. Check the internet connection and try again."),
         ("fp-pair-not-configured", "This version of FPRemote cannot be connected with a code. Please call FashionPoint."),
         ("fp-pair-service-unavailable", "The FPRemote service does not respond. Restart the computer and try again."),
+        // FashionPoint: the clinic edition installs before it asks for the code (fp_pair::installs_first).
+        ("fp-install-title", "Install FPRemote"),
+        ("fp-install-step-install", "Click Install. Windows asks whether to allow the app to make changes: click Yes."),
+        ("fp-install-step-code", "FPRemote then opens and asks for a code. Get it from your FashionPoint profile (menu FPRemote, Install)."),
+        ("fp-install-failed", "FPRemote was not installed. Click Install again and click Yes when Windows asks. If Windows asks for an administrator password and you do not have one, please call FashionPoint."),
+        ("fp-setup-next", "Once the setup is done, the field for the code from your FashionPoint profile appears here."),
         ("connecting_status", "Connecting to the RustDesk network..."),
         ("not_ready_status", "Not ready. Please check your connection"),
         ("ID/Relay Server", "ID/Relay server"),

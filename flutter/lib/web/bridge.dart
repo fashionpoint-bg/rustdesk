@@ -2054,5 +2054,10 @@ class RustdeskImpl {
     throw UnimplementedError("mainFpPair");
   }
 
+  Future<String> installFpInstall(
+      {required String options, required String path, dynamic hint}) {
+    throw UnimplementedError("installFpInstall");
+  }
+
   void dispose() {}
 }
