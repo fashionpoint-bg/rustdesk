@@ -406,8 +406,10 @@ void runInstallPage() async {
   await windowManager.ensureInitialized();
   await initEnv(kAppTypeMain);
   _runApp('', const InstallPage(), MyTheme.currentThemeMode());
-  WindowOptions windowOptions =
-      getHiddenTitleBarWindowOptions(size: Size(800, 600), center: true);
+  // FashionPoint: the clinic edition's install page (install_page.dart) is shorter.
+  WindowOptions windowOptions = getHiddenTitleBarWindowOptions(
+      size: bind.isIncomingOnly() ? Size(720, 460) : Size(800, 600),
+      center: true);
   windowManager.waitUntilReadyToShow(windowOptions, () async {
     windowManager.show();
     windowManager.focus();
