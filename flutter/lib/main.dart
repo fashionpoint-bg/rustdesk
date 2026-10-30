@@ -151,7 +151,12 @@ void runMainApp(bool startService) async {
 
   // Set window option.
   WindowOptions windowOptions = getHiddenTitleBarWindowOptions(
-      isMainWindow: true, alwaysOnTop: alwaysOnTop);
+      isMainWindow: true,
+      alwaysOnTop: alwaysOnTop,
+      // FashionPoint: on macOS an incoming-only client (the clinic edition) never becomes a
+      // Dock app. Every app that was in the Dock stays there among the recent apps after it
+      // quits, one more FPRemote icon for each place it ran from.
+      skipTaskbar: isMacOS && bind.isIncomingOnly());
   windowManager.waitUntilReadyToShow(windowOptions, () async {
     // Restore the location of the main window before window hide or show.
     await restoreWindowPosition(WindowType.Main);
@@ -306,7 +311,11 @@ bool _isCmReadyToShow = false;
 showCmWindow({bool isStartup = false}) async {
   if (isStartup) {
     WindowOptions windowOptions = getHiddenTitleBarWindowOptions(
-        size: kConnectionManagerWindowSizeClosedChat, alwaysOnTop: true);
+        size: kConnectionManagerWindowSizeClosedChat,
+        alwaysOnTop: true,
+        // FashionPoint: the session panel never becomes a Dock app on macOS, not even until
+        // mainHideDock() below: that moment alone left an FPRemote icon among the recent apps.
+        skipTaskbar: isMacOS);
     await windowManager.waitUntilReadyToShow(windowOptions, null);
     bind.mainHideDock();
     if (isWindows) {
@@ -351,7 +360,9 @@ showCmWindow({bool isStartup = false}) async {
 hideCmWindow({bool isStartup = false}) async {
   if (isStartup) {
     WindowOptions windowOptions = getHiddenTitleBarWindowOptions(
-        size: kConnectionManagerWindowSizeClosedChat);
+        size: kConnectionManagerWindowSizeClosedChat,
+        // FashionPoint: as in showCmWindow.
+        skipTaskbar: isMacOS);
     windowManager.setOpacity(0);
     await windowManager.waitUntilReadyToShow(windowOptions, null);
     bind.mainHideDock();
@@ -422,7 +433,8 @@ WindowOptions getHiddenTitleBarWindowOptions(
     {bool isMainWindow = false,
     Size? size,
     bool center = false,
-    bool? alwaysOnTop}) {
+    bool? alwaysOnTop,
+    bool skipTaskbar = false}) {
   var defaultTitleBarStyle = TitleBarStyle.hidden;
   // we do not hide titlebar on win7 because of the frame overflow.
   if (kUseCompatibleUiMode) {
@@ -432,7 +444,7 @@ WindowOptions getHiddenTitleBarWindowOptions(
     size: size,
     center: center,
     backgroundColor: (isMacOS && isMainWindow) ? null : Colors.transparent,
-    skipTaskbar: false,
+    skipTaskbar: skipTaskbar,
     titleBarStyle: defaultTitleBarStyle,
     alwaysOnTop: alwaysOnTop,
   );
