@@ -22,7 +22,8 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("fp-install-failed", "FPRemote не се инсталира. Натиснете „Инсталирай“ отново и, когато Windows попита, натиснете „Да“. Ако Windows иска парола на администратор и нямате такава, обадете се на FashionPoint."),
         ("fp-setup-next", "Когато завършите настройката, тук ще се появи полето за кода от профила ви във FashionPoint."),
         ("Your Desktop", "Вашата работна среда"),
-        ("desk_tip", "Вашата работна среда не може да бъде достъпена с този потребителски код и парола."),
+        // FashionPoint: upstream's text said the opposite of desk_tip ("cannot be accessed").
+        ("desk_tip", "Към този компютър може да се влезе с този идентификатор и парола."),
         ("Password", "Парола"),
         ("Ready", "Готово"),
         ("Established", "Установен"),
