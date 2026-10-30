@@ -664,6 +664,8 @@ class _DesktopHomePageState extends State<DesktopHomePage>
                 const TextStyle(color: white, fontSize: 20, letterSpacing: 3),
             decoration: InputDecoration(
               isDense: true,
+              // The app theme fills fields light grey, under which the white code did not show.
+              filled: false,
               hintText: translate('fp-pair-code'),
               hintStyle: const TextStyle(
                   color: Colors.white70, fontSize: 14, letterSpacing: 0),
