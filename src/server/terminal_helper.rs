@@ -846,6 +846,14 @@ pub fn run_terminal_helper(args: &[String]) -> Result<()> {
     let mut input_pipe = open_pipe(input_pipe_name, true)?;
     let mut output_pipe = open_pipe(output_pipe_name, false)?;
 
+    // FashionPoint: Windows before 10 1809 / Server 2019 (e.g. Server 2016, build 14393) has no
+    // CreatePseudoConsole, so openpty fails and the terminal closed at once. There the shell
+    // runs with plain pipes: no echo, no resize, no full-screen programs, but commands work.
+    if !conpty_available() {
+        log::info!("ConPTY not available, running the shell with pipes");
+        return run_pipe_shell(input_pipe, output_pipe);
+    }
+
     // Create ConPTY and shell
     let pty_size = PtySize {
         rows,
@@ -1046,6 +1054,137 @@ pub fn run_terminal_helper(args: &[String]) -> Result<()> {
     // closes the pipes, and the service then reports the terminal closed.
     drop(input_thread);
 
+    log::info!("Terminal helper exiting");
+    Ok(())
+}
+
+fn conpty_available() -> bool {
+    use winapi::um::libloaderapi::{GetModuleHandleA, GetProcAddress};
+    unsafe {
+        let kernel32 = GetModuleHandleA(b"kernel32.dll\0".as_ptr() as _);
+        !kernel32.is_null()
+            && !GetProcAddress(kernel32, b"CreatePseudoConsole\0".as_ptr() as _).is_null()
+    }
+}
+
+fn pipe_shell_command(shell: &str) -> std::process::Command {
+    let mut cmd = std::process::Command::new(shell);
+    let name = std::path::Path::new(shell)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(shell)
+        .to_ascii_lowercase();
+    if name.starts_with("pwsh") || name.starts_with("powershell") {
+        cmd.args(["-NoLogo", "-Command", "-"]);
+    } else {
+        cmd.arg("/Q");
+    }
+    cmd
+}
+
+fn run_pipe_shell(input_pipe: File, output_pipe: File) -> Result<()> {
+    use std::os::windows::process::CommandExt;
+    use std::process::Stdio;
+
+    let shell = get_default_shell();
+    let is_powershell = !shell.to_ascii_lowercase().ends_with("cmd.exe");
+    let mut child = pipe_shell_command(&shell)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .creation_flags(CREATE_NO_WINDOW.0)
+        .spawn()
+        .context("Failed to spawn shell")?;
+    log::debug!("Pipe shell {} started with PID: {}", shell, child.id());
+
+    let mut stdin = child.stdin.take().context("Failed to get shell stdin")?;
+    if is_powershell {
+        stdin.write_all(b"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\r\n")?;
+        stdin.flush()?;
+    }
+
+    let output_pipe = Arc::new(Mutex::new(output_pipe));
+    let forward = |mut source: Box<dyn Read + Send>, output: Arc<Mutex<File>>| {
+        thread::spawn(move || {
+            let mut buf = vec![0u8; 4096];
+            loop {
+                match source.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let mut output = output.lock().unwrap_or_else(|p| p.into_inner());
+                        if output.write_all(&buf[..n]).and_then(|_| output.flush()).is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(e) => {
+                        log::error!("Shell output read error: {}", e);
+                        break;
+                    }
+                }
+            }
+        })
+    };
+    let stdout = child.stdout.take().context("Failed to get shell stdout")?;
+    let stderr = child.stderr.take().context("Failed to get shell stderr")?;
+    let stdout_thread = forward(Box::new(stdout), output_pipe.clone());
+    let stderr_thread = forward(Box::new(stderr), output_pipe);
+
+    let input_thread = thread::spawn(move || {
+        let mut input_pipe = input_pipe;
+        let mut header_buf = [0u8; MSG_HEADER_SIZE];
+        let mut payload_buf = vec![0u8; 4096];
+        loop {
+            match read_exact_or_eof(&mut input_pipe, &mut header_buf) {
+                Ok(true) => {}
+                Ok(false) => break,
+                Err(e) => {
+                    log::error!("Input pipe header read error: {}", e);
+                    break;
+                }
+            }
+            let payload_len =
+                u32::from_le_bytes([header_buf[1], header_buf[2], header_buf[3], header_buf[4]])
+                    as usize;
+            if payload_len > MAX_PAYLOAD_SIZE {
+                log::error!("Payload too large: {} bytes", payload_len);
+                break;
+            }
+            if payload_buf.len() < payload_len {
+                payload_buf.resize(payload_len, 0);
+            }
+            if payload_len > 0
+                && !matches!(
+                    read_exact_or_eof(&mut input_pipe, &mut payload_buf[..payload_len]),
+                    Ok(true)
+                )
+            {
+                break;
+            }
+            match header_buf[0] {
+                MSG_TYPE_DATA => {
+                    if stdin
+                        .write_all(&payload_buf[..payload_len])
+                        .and_then(|_| stdin.flush())
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                MSG_TYPE_RESIZE => {}
+                other => {
+                    log::error!("Unknown message type: {}, terminating", other);
+                    break;
+                }
+            }
+        }
+    });
+
+    let exit_status = child.wait();
+    log::info!("Pipe shell exited: {:?}", exit_status);
+    let _ = stdout_thread.join();
+    let _ = stderr_thread.join();
+    drop(input_thread);
     log::info!("Terminal helper exiting");
     Ok(())
 }
