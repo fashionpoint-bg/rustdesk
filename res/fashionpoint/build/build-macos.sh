@@ -83,8 +83,15 @@ export PUB_CACHE=$root/pub-cache-$arch
 export PATH=$CARGO_HOME/bin:$flutter/bin:$root/nasm-2.16.03:$PATH
 if [ "$arch" = x86_64 ]; then
   export LIBCLANG_PATH=$root/llvm-x86_64/lib
-  [ -f "$LIBCLANG_PATH/libclang.dylib" ] \
-    || LIBCLANG_PATH=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib
+  if [ -f "$LIBCLANG_PATH/libclang.dylib" ]; then
+    # clang 15 cannot parse the macOS 27 SDK headers ("KernelKit requires -fdefine-target-os-macros"), so bindgen
+    # reads the newest SDK of the Command Line Tools older than 26; the build itself still uses Xcode's.
+    sdk=$(ls -d /Library/Developer/CommandLineTools/SDKs/MacOSX1[0-9].*.sdk 2>/dev/null | sort -V | tail -1)
+    [ -n "$sdk" ] || fail "no macOS 1x SDK in /Library/Developer/CommandLineTools/SDKs for bindgen"
+    export BINDGEN_EXTRA_CLANG_ARGS="-isysroot $sdk"
+  else
+    LIBCLANG_PATH=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib
+  fi
   lipo -archs "$LIBCLANG_PATH/libclang.dylib" | grep -qw x86_64 || fail "$LIBCLANG_PATH/libclang.dylib has no x86_64 slice"
 fi
 FP_CLIENT_CONFIG=$(tr -d '\n' <"$config")
