@@ -5,7 +5,7 @@
 # The Intel build runs build.py, vcpkg and Rust under Rosetta 2 (the system's universal Python, the x86_64 Rust
 # toolchain), so Rust builds for its host x86_64 as on the job's Intel runner and build.py finds the library where it
 # expects it; Flutter then builds the app for x86_64 only (build.py sets FLUTTER_XCODE_ARCHS from the host), minimum
-# macOS 10.14. bindgen loads an x86_64 libclang there: Homebrew's llvm is arm64 only, and Xcode 27 ships libclang
+# macOS 12.0 (Xcode 27 builds nothing older; 10.14 up to fp-v1.5.0-6). bindgen loads an x86_64 libclang there: Homebrew's llvm is arm64 only, and Xcode 27 ships libclang
 # without an x86_64 slice, so <root>/llvm-x86_64/lib (libclang.dylib from LLVM 15.0.7's x86_64-apple-darwin release)
 # comes first and Xcode's is the fallback.
 # Each architecture has its own checkout (<root>/src-<arch>), so the two keep their build caches.
@@ -41,7 +41,7 @@ free_gb=$(df -g "$HOME" | awk 'NR==2 {print $4}')
 [ -x /opt/homebrew/bin/brew ] && eval "$(/opt/homebrew/bin/brew shellenv)"
 case "$arch" in
   arm64) triplet=arm64-osx target=aarch64-apple-darwin label=aarch64 run=() extra=--screencapturekit min=12.3 ;;
-  x86_64) triplet=x64-osx target=x86_64-apple-darwin label=x86_64 run=(arch -x86_64) extra='' min='' ;;
+  x86_64) triplet=x64-osx target=x86_64-apple-darwin label=x86_64 run=(arch -x86_64) extra='' min=12.0 ;;
   *) fail "architecture must be arm64 or x86_64" ;;
 esac
 case "$edition" in clinic | staff) ;; *) fail "edition must be clinic or staff" ;; esac
@@ -129,7 +129,7 @@ if [ -z "$package_only" ]; then
 
   step "Build rustdesk"
   if [ -n "$min" ]; then
-    # The job's minimum macOS for the Apple chip build, in the same four files.
+    # The minimum macOS of the build (12.3 Apple chip as the job, 12.0 Intel: Xcode 27's floor), in the same four files.
     sed -i '' -e "s/MACOSX_DEPLOYMENT_TARGET\=[0-9]*.[0-9]*/MACOSX_DEPLOYMENT_TARGET=${min}/" build.py
     sed -i '' -e "s/platform :osx, '.*'/platform :osx, '${min}'/" flutter/macos/Podfile
     sed -i '' -e "s/osx_minimum_system_version = \"[0-9]*.[0-9]*\"/osx_minimum_system_version = \"${min}\"/" Cargo.toml
@@ -184,7 +184,7 @@ fi
   echo "sha256: $(shasum -a 256 "$dmg" | cut -d' ' -f1)"
   echo "edition: $edition"
   echo "commit: $head"
-  echo "arch: $arch (minimum macOS ${min:-10.14})"
+  echo "arch: $arch (minimum macOS $min)"
   echo "signed: $([ "$sign" = --sign ] && echo true || echo false)"
   echo "rust: $("$RUSTUP_HOME/toolchains/$toolchain/bin/rustc" -V 2>/dev/null || ${run[@]+"${run[@]}"} "$RUSTUP_HOME/toolchains/$toolchain/bin/rustc" -V)"
   echo "flutter: $flutter"
