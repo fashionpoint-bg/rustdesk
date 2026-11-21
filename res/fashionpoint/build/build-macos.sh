@@ -64,6 +64,9 @@ head=$(git -C "$src" rev-parse HEAD)
 
 workflow=$src/.github/workflows/flutter-build.yml
 pin() { sed -nE "s/^ +$1: \"([^\"]+)\".*/\1/p" "$workflow" | head -1; }
+# Both architectures build with FLUTTER_VERSION and the default bridge, as up to 1.5.0. Since 1.5.3 the job builds
+# arm64 with FLUTTER_MACOS_ARM_VERSION (3.44: its own bridge, apply_flutter_3.44_source_patches.sh, no Swift
+# Package Manager) for a text input crash of the 3.24 engine (rustdesk#16817); the committed sources stay 3.24 ones.
 version=$(pin VERSION) flutter_version=$(pin FLUTTER_VERSION) rust_version=$(pin MAC_RUST_VERSION) vcpkg_commit=$(pin VCPKG_COMMIT_ID)
 flutter=$root/flutter-$flutter_version
 toolchain=$rust_version-$target
