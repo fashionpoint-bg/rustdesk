@@ -129,6 +129,11 @@ mac "rm -f ~/fpb/logs/$tag.done ~/fpb/logs/$tag-*.rc; cd ~/fpb && nohup /bin/bas
 
 step "Build the Windows installer (signed)"
 mkdir -p "$win/logs"
+# FPB_KEEP_WINDOWS=1 keeps the installer an earlier run of the same tag built and signed (a rerun for a failed Mac
+# build), so the file already installed somewhere stays the released one; it is checked below like a new one.
+if [ -n "${FPB_KEEP_WINDOWS:-}" ] && [ -s "$win/out/$tag/FPRemote-$title-$version-x86_64.exe" ]; then
+  echo "keeping $win/out/$tag/FPRemote-$title-$version-x86_64.exe"
+else
 # The Azure credentials only in this subshell, handed to Windows through WSLENV.
 (
   set -a
@@ -141,6 +146,7 @@ mkdir -p "$win/logs"
     -Commit "$sha" -Config "C:\\fpb\\config\\$edition.json" -Bridge "C:\\fpb\\bridge\\$short" -Out "C:\\fpb\\out\\$tag" -Sign \
     2>&1 | tr -d '\r' > "$win/logs/$tag-windows.log"
 ) || { tail -30 "$win/logs/$tag-windows.log"; fail "the Windows build failed (C:\\fpb\\logs\\$tag-windows.log)"; }
+fi
 exe=$win/out/$tag/FPRemote-$title-$version-x86_64.exe
 [ -s "$exe" ] || fail "$exe was not built"
 

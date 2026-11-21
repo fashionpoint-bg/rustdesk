@@ -5,7 +5,9 @@
 # The Intel build runs build.py, vcpkg and Rust under Rosetta 2 (the system's universal Python, the x86_64 Rust
 # toolchain), so Rust builds for its host x86_64 as on the job's Intel runner and build.py finds the library where it
 # expects it; Flutter then builds the app for x86_64 only (build.py sets FLUTTER_XCODE_ARCHS from the host), minimum
-# macOS 10.14. bindgen loads Xcode's libclang there: Homebrew's llvm is arm64 only.
+# macOS 10.14. bindgen loads an x86_64 libclang there: Homebrew's llvm is arm64 only, and Xcode 27 ships libclang
+# without an x86_64 slice, so <root>/llvm-x86_64/lib (libclang.dylib from LLVM 15.0.7's x86_64-apple-darwin release)
+# comes first and Xcode's is the fallback.
 # Each architecture has its own checkout (<root>/src-<arch>), so the two keep their build caches.
 # --sign signs the app and the dmg with the Developer ID identity in <root>/secrets/signing.keychain-db and has
 # Apple notarize the dmg; the keychain password, MACOS_CODESIGN_IDENTITY (the certificate's SHA-1), APPLE_ID,
@@ -80,7 +82,9 @@ export VCPKG_BINARY_SOURCES="clear;files,$root/vcpkg-cache,readwrite"
 export PUB_CACHE=$root/pub-cache-$arch
 export PATH=$CARGO_HOME/bin:$flutter/bin:$root/nasm-2.16.03:$PATH
 if [ "$arch" = x86_64 ]; then
-  export LIBCLANG_PATH=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib
+  export LIBCLANG_PATH=$root/llvm-x86_64/lib
+  [ -f "$LIBCLANG_PATH/libclang.dylib" ] \
+    || LIBCLANG_PATH=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib
   lipo -archs "$LIBCLANG_PATH/libclang.dylib" | grep -qw x86_64 || fail "$LIBCLANG_PATH/libclang.dylib has no x86_64 slice"
 fi
 FP_CLIENT_CONFIG=$(tr -d '\n' <"$config")
