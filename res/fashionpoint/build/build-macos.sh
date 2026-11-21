@@ -79,8 +79,13 @@ export VCPKG_BINARY_SOURCES="clear;files,$root/vcpkg-cache,readwrite"
 # Dart packages in a cache of the build's own, not the user's.
 export PUB_CACHE=$root/pub-cache-$arch
 export PATH=$CARGO_HOME/bin:$flutter/bin:$root/nasm-2.16.03:$PATH
+# The Xcode of the build, for this process only: the Mac's default (App Store Xcode.app) stays as it is. Xcode 27
+# builds nothing below macOS 12.0 and has no x86_64 libclang, so the builds keep the Xcode of the targets upstream
+# RustDesk supports (Simeon, 21.11.2026), installed next to it by xcodes.
+export DEVELOPER_DIR=${FPB_XCODE:-/Applications/Xcode-26.2.0.app}/Contents/Developer
+[ -d "$DEVELOPER_DIR" ] || fail "$DEVELOPER_DIR is missing: install that Xcode next to the default one (xcodes)"
 if [ "$arch" = x86_64 ]; then
-  export LIBCLANG_PATH=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib
+  export LIBCLANG_PATH=$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/lib
   lipo -archs "$LIBCLANG_PATH/libclang.dylib" | grep -qw x86_64 || fail "$LIBCLANG_PATH/libclang.dylib has no x86_64 slice"
 fi
 FP_CLIENT_CONFIG=$(tr -d '\n' <"$config")
